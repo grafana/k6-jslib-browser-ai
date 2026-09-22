@@ -60,4 +60,4 @@ const page = await browser.newPage({ decisionProvider: 'jev' });
 
 ## License
 
-MIT
+Apache-2.0
