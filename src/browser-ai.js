@@ -14,6 +14,9 @@ const FORCEABLE_ACTIONS = ['click', 'check', 'uncheck', 'fill', 'type'];
 // scored 0.85 while unrelated upvote-arrow links clustered at 0.4-0.5.
 const JEV_MATCH_THRESHOLD = 0.65;
 const JEV_DONE_THRESHOLD = 0.8;
+const WAIT_MET_THRESHOLD = 0.65;
+const DEFAULT_WAIT_TIMEOUT_MS = 10000;
+const DEFAULT_WAIT_INTERVAL_MS = 500;
 
 const DO_SYSTEM_PROMPT =
   'You control a web browser during a load test. You are given a natural ' +
@@ -45,6 +48,12 @@ const VALUE_SYSTEM_PROMPT =
   'Extract or generate the single literal string value implied by a browser ' +
   'automation instruction (e.g. what to type into a field). Reply with ONLY ' +
   'that string - no quotes, no prose, no markdown fences.';
+
+const WAIT_SYSTEM_PROMPT =
+  'You check whether a condition about a web page is currently true during ' +
+  'a load test. You are given the condition, the page URL, and the page\'s ' +
+  'visible text. Reply with ONLY compact JSON: {"met": true|false}, no ' +
+  'prose, no markdown fences.';
 
 /**
  * Wraps a k6 browser `page` with a small `.ai` namespace (do / find / read /
@@ -304,40 +313,58 @@ export function browserAI(page, options = {}) {
 
   // Passing a {selector, action, value} object (e.g. from ai.find())
   // instead of a string skips the decision step entirely.
-  async function doAction(instruction, actionOpts) {
+  //
+  // actionOpts.secrets lets an instruction reference a value by name
+  // (`type {{password}} into the password field`) instead of containing
+  // it literally: the LLM/Jev decision only ever sees the placeholder
+  // token, and it's swapped for the real value right before the action
+  // actually runs. This is the only case do() needs a real secret at all
+  // - a value quoted directly in the instruction still goes through the
+  // decision step (and, for the LLM path, the prompt) as-is.
+  async function doAction(instruction, actionOpts = {}) {
+    const { secrets, variables, ...playwrightOpts } = actionOpts;
+
     if (instruction && typeof instruction === 'object') {
-      return perform(instruction, actionOpts);
+      return perform(instruction, playwrightOpts);
     }
+
+    // variables are resolved into the instruction text up front, so the
+    // LLM/Jev decision sees the real value - unlike secrets, which stay as
+    // a placeholder through the decision and are only filled into the
+    // final value. Use variables for anything that isn't sensitive.
+    const resolvedInstruction = substitutePlaceholders(instruction, variables);
 
     const elements = await snapshot();
     if (elements.length === 0) {
-      throw new Error(`browser-ai: no visible interactive elements found for "${instruction}"`);
+      throw new Error(`browser-ai: no visible interactive elements found for "${resolvedInstruction}"`);
     }
-    const decision = await decideAction(instruction, elements);
+    const decision = await decideAction(resolvedInstruction, elements);
 
     if (!decision || decision.id === undefined || decision.id === null) {
-      throw new Error(`browser-ai: could not resolve an action for "${instruction}"`);
+      throw new Error(`browser-ai: could not resolve an action for "${resolvedInstruction}"`);
     }
     const target = elements[decision.id];
     if (!target) {
-      throw new Error(`browser-ai: referenced an unknown element for "${instruction}"`);
+      throw new Error(`browser-ai: referenced an unknown element for "${resolvedInstruction}"`);
     }
 
-    return perform(
-      {
-        selector: target.selector,
-        frameSelector: target.frameSelector,
-        action: decision.action,
-        value: decision.value,
-      },
-      actionOpts
-    );
+    // Returned as-is (placeholder intact), never the value with secrets
+    // substituted in, so logging/inspecting the result can't leak one.
+    const step = {
+      selector: target.selector,
+      frameSelector: target.frameSelector,
+      action: decision.action,
+      value: decision.value,
+    };
+    await perform({ ...step, value: substitutePlaceholders(step.value, secrets) }, playwrightOpts);
+    return step;
   }
 
-  async function find(instruction) {
+  async function find(instruction, findOpts = {}) {
+    const resolvedInstruction = substitutePlaceholders(instruction, findOpts.variables);
     const elements = await snapshot();
-    if (decisionProvider === 'jev') return findWithJev(instruction, elements);
-    return findWithLlm(instruction, elements);
+    if (decisionProvider === 'jev') return findWithJev(resolvedInstruction, elements);
+    return findWithLlm(resolvedInstruction, elements);
   }
 
   function findWithLlm(instruction, elements) {
@@ -394,6 +421,7 @@ export function browserAI(page, options = {}) {
   // Always uses the generative LLM, regardless of decisionProvider: Jev
   // only answers typed questions and never emits free text.
   async function read(instruction, readOpts = {}) {
+    const resolvedInstruction = substitutePlaceholders(instruction, readOpts.variables);
     const text = await evaluateStable(() => document.body.innerText.slice(0, 12000));
     const schemaHint = readOpts.schema
       ? `The result must match this JSON schema exactly:\n${JSON.stringify(readOpts.schema)}`
@@ -417,43 +445,92 @@ export function browserAI(page, options = {}) {
 
     return askLlm(
       READ_SYSTEM_PROMPT,
-      `Instruction: ${instruction}\n\n${schemaHint}\n\n` +
+      `Instruction: ${resolvedInstruction}\n\n${schemaHint}\n\n` +
         'Current form control values (ground truth for what is currently ' +
         `selected/checked/filled in - prefer this over page text for that):\n${JSON.stringify(controls)}\n\n` +
         `Page text:\n${text}`
     );
   }
 
+  // Polls a natural-language condition against the page instead of a
+  // hardcoded signal like a URL substring or a specific element - useful
+  // for redirects/transitions whose timing isn't consistent (e.g. an app
+  // that takes a variable amount of time to leave its login page) without
+  // baking that one app's behavior into the wait itself. Throws on timeout.
+  async function waitUntil(condition, waitOpts = {}) {
+    const timeout = waitOpts.timeout || DEFAULT_WAIT_TIMEOUT_MS;
+    const interval = waitOpts.interval || DEFAULT_WAIT_INTERVAL_MS;
+    const resolvedCondition = substitutePlaceholders(condition, waitOpts.variables);
+    const start = Date.now();
+
+    for (;;) {
+      const met =
+        decisionProvider === 'jev'
+          ? await checkConditionWithJev(resolvedCondition)
+          : await checkConditionWithLlm(resolvedCondition);
+      if (met) return;
+      if (Date.now() - start >= timeout) {
+        throw new Error(`browser-ai: waitUntil timed out after ${timeout}ms waiting for "${resolvedCondition}"`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, interval));
+    }
+  }
+
+  async function checkConditionWithLlm(condition) {
+    const text = await evaluateStable(() => document.body.innerText.slice(0, 4000));
+    const decision = askLlm(
+      WAIT_SYSTEM_PROMPT,
+      `Condition: ${condition}\n\nCurrent URL: ${page.url()}\n\nPage text:\n${text}`
+    );
+    return !!(decision && decision.met);
+  }
+
+  async function checkConditionWithJev(condition) {
+    const client = getJev();
+    const text = await evaluateStable(() => document.body.innerText.slice(0, 4000));
+    const answers = client.evaluate(
+      { condition, url: page.url(), page_text: text },
+      { met: { type: 'noul', instructions: `Is the following currently true about the page: ${condition}` } }
+    );
+    return !!(answers.met && answers.met.noul >= WAIT_MET_THRESHOLD);
+  }
+
   async function agent(goal, agentOpts = {}) {
     const maxSteps = agentOpts.maxSteps || DEFAULT_MAX_AGENT_STEPS;
+    const secrets = agentOpts.secrets;
+    const resolvedGoal = substitutePlaceholders(goal, agentOpts.variables);
     const history = [];
 
     for (let step = 0; step < maxSteps; step++) {
       const elements = await snapshot();
       if (elements.length === 0) {
-        throw new Error(`browser-ai: no visible interactive elements found for goal "${goal}"`);
+        throw new Error(`browser-ai: no visible interactive elements found for goal "${resolvedGoal}"`);
       }
-      const decision = await decideAction(goal, elements, { includeDone: true, history });
+      const decision = await decideAction(resolvedGoal, elements, { includeDone: true, history });
 
       if (decision && decision.done) {
         return { done: true, reason: decision.reason, steps: history };
       }
       if (!decision || decision.id === undefined || decision.id === null) {
-        throw new Error(`browser-ai: agent could not resolve a next step for goal "${goal}"`);
+        throw new Error(`browser-ai: agent could not resolve a next step for goal "${resolvedGoal}"`);
       }
 
       const target = elements[decision.id];
       if (!target) {
-        throw new Error(`browser-ai: agent referenced an unknown element for goal "${goal}"`);
+        throw new Error(`browser-ai: agent referenced an unknown element for goal "${resolvedGoal}"`);
       }
 
-      const executed = await perform({
+      // record keeps the placeholder value (if any) - it feeds into the
+      // *next* iteration's prompt as "actions already taken", so a real
+      // secret must never end up in it, only in the actual browser action.
+      const plannedStep = {
         selector: target.selector,
         frameSelector: target.frameSelector,
         action: decision.action,
         value: decision.value,
-      });
-      const record = { id: decision.id, description: target.text, ...executed };
+      };
+      await perform({ ...plannedStep, value: substitutePlaceholders(plannedStep.value, secrets) });
+      const record = { id: decision.id, description: target.text, ...plannedStep };
       history.push(record);
       if (agentOpts.onStep) agentOpts.onStep(record, step);
     }
@@ -461,7 +538,7 @@ export function browserAI(page, options = {}) {
     return { done: false, reason: 'max steps reached', steps: history };
   }
 
-  const ai = { do: doAction, find, read, agent };
+  const ai = { do: doAction, find, read, agent, waitUntil };
 
   return new Proxy(page, {
     get(target, prop, receiver) {
@@ -551,6 +628,17 @@ function extractQuotedValue(instruction) {
   const match = instruction.match(/"([^"]*)"|'([^']*)'/);
   if (!match) return undefined;
   return match[1] !== undefined ? match[1] : match[2];
+}
+
+// Shared by secrets (substituted into the *value* after the decision, so
+// the real value never reaches the LLM/Jev) and variables (substituted
+// into the *instruction* before the decision, so the model does see the
+// real value - for non-sensitive, dynamic instruction text).
+function substitutePlaceholders(text, map) {
+  if (typeof text !== 'string' || !map) return text;
+  return text.replace(/\{\{(\w+)\}\}/g, (match, name) =>
+    Object.prototype.hasOwnProperty.call(map, name) ? map[name] : match
+  );
 }
 
 function elementPrompt(instruction, elements) {
