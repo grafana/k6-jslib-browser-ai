@@ -1,12 +1,12 @@
 # k6-browser-ai
 
-A JS library that adds AI-driven actions to k6's `k6/browser` module. 
+A JS library that adds AI-driven actions to k6's `k6/browser` module.
 
 ```javascript
-// Act
+// Do actions
 await page.ai.do('click the sign in button');
 
-// Extract (optionally with a schema)
+// Extract data
 const user = await page.ai.read('the user\'s name', { schema: { name: 'string' } });
 const links = await page.ai.find('every nav link');
 
@@ -31,13 +31,15 @@ ANTHROPIC_TOKEN=your_token k6 run examples/basic.test.js
 
 - `browser` - drop-in for `k6/browser`'s `browser`; `.newPage()` returns an AI-ready page
 - `browserAI(page, options?)` - wraps an already-open page directly
-- `page.ai.do(instruction | step)` - run one action, or replay a `find()` result with no LLM call
-- `page.ai.find(instruction)` - matching elements, ready to pass into `do()`
-- `page.ai.read(instruction, { schema? })` - extract structured data
-- `page.ai.agent(goal, { maxSteps? })` - step until done
+- `page.ai.do(instruction | step, { secrets?, variables? })` - run one action, or replay a `find()` result with no LLM call
+- `page.ai.find(instruction, { variables? })` - matching elements, ready to pass into `do()`
+- `page.ai.read(instruction, { schema?, variables? })` - extract structured data
+- `page.ai.agent(goal, { maxSteps?, secrets?, variables? })` - step until done
+- `page.ai.waitUntil(condition, { timeout?, interval?, variables? })` - poll a condition instead of a hardcoded wait
 
-Options: `llm`, `llmOptions`, `jev`, `jevOptions`, `maxElements`,
-`actionTimeout`, `verbose`, `decisionProvider` (default `'llm'`).
+`{{name}}` pulls from `secrets` (hidden from the LLM) or `variables` (visible to it).
+
+Options: `llm`, `llmOptions`, `jev`, `jevOptions`, `maxElements`, `actionTimeout`, `verbose`, `decisionProvider`.
 
 ## Using Jev to make decisions
 
@@ -54,10 +56,11 @@ const page = await browser.newPage({ decisionProvider: 'jev' });
 
 ## Caveats
 
-- You need to wait for the page to settle, it doesn't guess when hydration is done.
-- `maxElements` defaults to 150 can truncate on link-dense pages.
-- Iframe support goes one level deep and same-origin only.
+- Doesn't guess when hydration is done - use `waitUntil` for that.
+- `waitUntil`: word conditions around a fact (the URL), not a vague state.
+- `maxElements` (150 default) can truncate link-dense pages.
+- Iframe support: one level deep, same-origin only.
 
 ## License
 
-MIT
+Apache-2.0

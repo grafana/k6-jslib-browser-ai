@@ -24,10 +24,35 @@ function collectInteractiveElements(maxElements) {
     return !!el.disabled || el.getAttribute('aria-disabled') === 'true';
   }
 
+  // A field with no innerText/value/aria-label/placeholder can still have
+  // a real, correct label - an explicit <label for="id"> or an ancestor
+  // <label> wrapping the field entirely - which is the standard, valid way
+  // to label a form field and not specific to any one site.
+  function labelText(el) {
+    if (el.id) {
+      const byFor = el.ownerDocument.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      if (byFor) return byFor.textContent.trim();
+    }
+    const ancestor = el.closest('label');
+    return ancestor ? ancestor.textContent.trim() : '';
+  }
+
   function cssPath(el) {
-    if (el.id) return `#${CSS.escape(el.id)}`;
+    // id and data-testid are common shortcuts, but neither is guaranteed
+    // unique in practice (e.g. Grafana reuses the same data-testid across
+    // every nav menu item) - a non-unique selector makes Playwright's
+    // strict-mode locator throw instead of acting, so verify before using
+    // either shortcut rather than assuming.
+    const doc = el.ownerDocument;
+    if (el.id) {
+      const idSelector = `#${CSS.escape(el.id)}`;
+      if (doc.querySelectorAll(idSelector).length === 1) return idSelector;
+    }
     const testId = el.getAttribute('data-testid');
-    if (testId) return `[data-testid="${testId}"]`;
+    if (testId) {
+      const testIdSelector = `[data-testid="${testId}"]`;
+      if (doc.querySelectorAll(testIdSelector).length === 1) return testIdSelector;
+    }
 
     const parts = [];
     let node = el;
@@ -65,12 +90,18 @@ function collectInteractiveElements(maxElements) {
       }
 
       const tag = el.tagName.toLowerCase();
+      const type = el.getAttribute('type') || undefined;
 
       // A <select>'s innerText is the browser-concatenated text of *every*
       // option, not the selected one - use the actually-selected option's
       // label instead, so callers (do()/find()/read()) see real state.
+      // A password field's current value must never be sent to an LLM,
+      // regardless of how it got typed in (page.ai.do(), a plain
+      // page.locator().fill(), or the user) - describe it, don't echo it.
       let text;
-      if (tag === 'select') {
+      if (type === 'password') {
+        text = '(password field)';
+      } else if (tag === 'select') {
         const selected = el.options[el.selectedIndex];
         text = selected ? selected.label || selected.text || selected.value || '' : '';
       } else {
@@ -79,12 +110,12 @@ function collectInteractiveElements(maxElements) {
           el.value ||
           el.getAttribute('aria-label') ||
           el.getAttribute('placeholder') ||
+          labelText(el) ||
           ''
         );
       }
       text = text.trim().slice(0, 120);
 
-      const type = el.getAttribute('type') || undefined;
       const entry = {
         id: results.length,
         tag,
