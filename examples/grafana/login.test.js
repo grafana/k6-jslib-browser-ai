@@ -16,12 +16,8 @@ export default async function () {
 
     // {{user}}/{{password}} are placeholders - the LLM only ever sees these
     // tokens, never the real credentials from .env.
-    await page.ai.do('type {{user}} into the username field', {
-      secrets: { user: readEnv('ADMIN_USER') },
-    });
-    await page.ai.do('type {{password}} into the password field', {
-      secrets: { password: readEnv('ADMIN_PASSWORD') },
-    });
+    await page.ai.do('type {{user}} into the username field', { secrets: { user: readEnv('ADMIN_USER') } });
+    await page.ai.do('type {{password}} into the password field', { secrets: { password: readEnv('ADMIN_PASSWORD') } });
     await page.ai.do('click the log in button');
 
     // A concrete fact (the URL) is a more reliable waitUntil condition

@@ -5,6 +5,20 @@ function collectInteractiveElements(maxElements) {
   const SELECTOR =
     'a, button, input, select, textarea, [role], [contenteditable="true"], [onclick], summary';
 
+  // Frameworks routinely make a plain <li>/<div>/<span> clickable via a
+  // JS-only event listener, with no `role` or `onclick` attribute to mark
+  // it up as such - invisible to SELECTOR above even though it's clearly
+  // meant to be clicked. `cursor: pointer` is the one signal frameworks
+  // still reliably set for these, so it's used as a fallback net in
+  // collectFrom() below (verified: Grafana's time-range quick-range rows
+  // - "Last 24 hours" etc. - are exactly this: bare <li> elements the
+  // main selector couldn't see at all, collapsing the whole list into one
+  // unusable blob of concatenated text via its <ul role="presentation">
+  // ancestor, which *does* match on [role]).
+  function hasPointerCursor(el) {
+    return el.ownerDocument.defaultView.getComputedStyle(el).cursor === 'pointer';
+  }
+
   function isVisible(el) {
     const rect = el.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) return false;
@@ -37,6 +51,31 @@ function collectInteractiveElements(maxElements) {
     return ancestor ? ancestor.textContent.trim() : '';
   }
 
+  // An icon-only element (a magnifying-glass <svg> submit button, a
+  // decorative-looking nav toggle) routinely has no innerText, value,
+  // aria-label or placeholder at all - verified this session on eBay's
+  // search-submit icon and x.com's social-login icons, both of which
+  // ended up as blank candidates the model had to guess at with zero
+  // information. These two are lower-confidence than the direct ARIA
+  // sources above, so they're only tried as a last resort, but they're
+  // still real, deliberately-authored accessible-name-adjacent signals,
+  // not guesses: an SVG's own <title> child is the standard way to give
+  // an inline icon an accessible name, and a data-testid/data-test value
+  // is near-universally written to be human-readable QA/test tooling by
+  // the site's own authors ("data-testid Save dashboard button") - this
+  // reuses that same attribute dom.js already reads for selector
+  // shortcuts, just as descriptive text instead.
+  function svgTitleText(el) {
+    if (el.tagName.toLowerCase() !== 'svg') return '';
+    const titleEl = el.querySelector('title');
+    return titleEl ? titleEl.textContent.trim() : '';
+  }
+
+  function testIdText(el) {
+    const testId = el.getAttribute('data-testid') || el.getAttribute('data-test');
+    return testId ? testId.replace(/[-_]+/g, ' ').trim() : '';
+  }
+
   function cssPath(el) {
     // id and data-testid are common shortcuts, but neither is guaranteed
     // unique in practice (e.g. Grafana reuses the same data-testid across
@@ -56,7 +95,8 @@ function collectInteractiveElements(maxElements) {
 
     const parts = [];
     let node = el;
-    while (node && node.nodeType === 1 && parts.length < 6) {
+    let path = '';
+    while (node && node.nodeType === 1) {
       let part = node.tagName.toLowerCase();
       if (node.parentElement) {
         const siblings = Array.from(node.parentElement.children).filter(
@@ -67,9 +107,20 @@ function collectInteractiveElements(maxElements) {
         }
       }
       parts.unshift(part);
+      path = parts.join(' > ');
+      // 6 levels is comfortably enough to disambiguate ordinary markup, but
+      // a deeply-nested modern SPA (custom elements, heavily wrapped
+      // component trees - verified on youtube.com and facebook.com) can
+      // produce an identical 6-level suffix for two unrelated elements.
+      // That silently breaks every action on it, not just this one, since
+      // Playwright's strict-mode locator throws "multiple elements
+      // returned" instead of acting - so verify past that point rather
+      // than assume, climbing all the way to the document root if we have
+      // to, until the selector actually resolves to just this element.
+      if (parts.length >= 6 && doc.querySelectorAll(path).length === 1) return path;
       node = node.parentElement;
     }
-    return parts.join(' > ');
+    return path;
   }
 
   const results = [];
@@ -80,7 +131,41 @@ function collectInteractiveElements(maxElements) {
   // for the top-level document itself.
   function collectFrom(doc, frameSelector) {
     if (truncated) return;
-    const nodes = Array.from(doc.querySelectorAll(SELECTOR));
+    const matched = Array.from(doc.querySelectorAll(SELECTOR));
+    const matchedSet = new Set(matched);
+
+    // Second pass for the cursor:pointer fallback (see hasPointerCursor
+    // above) - keep only the outermost pointer-cursor element in each
+    // nested cluster (e.g. an <li> wrapping an icon <span> that also
+    // inherits cursor:pointer), since a click anywhere inside it reaches
+    // the same handler and the outer element's own text already captures
+    // the whole row.
+    const pointerSet = new Set();
+    for (const el of doc.querySelectorAll('*')) {
+      // <label> gets a default cursor:pointer from the browser's own UA
+      // stylesheet whenever it wraps/targets a form control, which would
+      // otherwise add it here as a second, redundant candidate right next
+      // to the control it labels - labelText() above already folds a
+      // label's text into its target field instead.
+      if (matchedSet.has(el) || el.tagName === 'LABEL' || !hasPointerCursor(el)) continue;
+      // Also covered if an ancestor already matched the *native* selector
+      // (e.g. this is a <span> inside an <a>, inheriting cursor:pointer
+      // from it) - not just an ancestor claimed by this same pass -
+      // otherwise an icon/text wrapper inside an already-interactive
+      // element ends up as a second, redundant candidate right next to
+      // its own parent (verified: github.com's "Sign in" <a> and its
+      // inner <span> both showing up separately).
+      let covered = false;
+      for (let ancestor = el.parentElement; ancestor; ancestor = ancestor.parentElement) {
+        if (pointerSet.has(ancestor) || matchedSet.has(ancestor)) {
+          covered = true;
+          break;
+        }
+      }
+      if (!covered) pointerSet.add(el);
+    }
+
+    const nodes = matched.concat(Array.from(pointerSet));
 
     for (const el of nodes) {
       if (!isVisible(el) || isDisabled(el)) continue;
@@ -109,8 +194,11 @@ function collectInteractiveElements(maxElements) {
           el.innerText ||
           el.value ||
           el.getAttribute('aria-label') ||
+          el.getAttribute('title') ||
           el.getAttribute('placeholder') ||
           labelText(el) ||
+          svgTitleText(el) ||
+          testIdText(el) ||
           ''
         );
       }
@@ -139,8 +227,12 @@ function collectInteractiveElements(maxElements) {
     // Descend into same-origin iframes, one level deep (a frame nested
     // inside a frame is rare enough not to be worth the extra complexity
     // of chained frameLocator() selectors). Cross-origin iframes throw or
-    // return null on contentDocument access - just skip those; there is
-    // no way to see inside them from here regardless.
+    // return null on contentDocument access - there's genuinely no way to
+    // see inside them from here, but silently dropping them gives the
+    // model zero signal that reachable-looking content exists there at
+    // all (e.g. an embedded payment form or widget) - a non-actionable
+    // hint entry is strictly more honest than nothing, same spirit as
+    // botChallengeHint() elsewhere in this library.
     if (!frameSelector) {
       const iframes = Array.from(doc.querySelectorAll('iframe'));
       for (const frame of iframes) {
@@ -151,8 +243,17 @@ function collectInteractiveElements(maxElements) {
         } catch (err) {
           innerDoc = null;
         }
-        if (!innerDoc) continue;
-        collectFrom(innerDoc, cssPath(frame));
+        if (innerDoc) {
+          collectFrom(innerDoc, cssPath(frame));
+          continue;
+        }
+        if (!isVisible(frame) || results.length >= maxElements) continue;
+        results.push({
+          id: results.length,
+          tag: 'iframe',
+          text: '(cross-origin embedded content - not inspectable by browser-ai)',
+          selector: cssPath(frame),
+        });
       }
     }
   }
@@ -161,4 +262,62 @@ function collectInteractiveElements(maxElements) {
   return { elements: results, truncated };
 }
 
-export { collectInteractiveElements };
+// Runs inside the browser page (via page.evaluate) for read()/waitUntil():
+// document.body.innerText sends the *entire* page's text to the LLM,
+// including offscreen article bodies, footers, and nav menus that have
+// nothing to do with whatever's actually on screen right now - wasted
+// tokens and cost at best, and at worst noise that can tip a request into
+// looking like something it isn't (verified: x.com's footer legal links
+// riding along in a read() prompt contributed to an Anthropic safety
+// refusal that a shorter, on-screen-only prompt didn't trigger). Prunes
+// whole offscreen subtrees rather than walking every text node, so a
+// large "reasonably sized" visible section still gets its own innerText
+// wholesale - keeping that method's natural line-break handling - while a
+// wrapper far taller than the viewport (<body>, a long <article>) gets
+// recursed into instead of taken as one giant blob.
+function collectVisibleText(maxChars) {
+  const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE']);
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+
+  function inViewportRect(rect) {
+    return rect.bottom > 0 && rect.top < vh && rect.right > 0 && rect.left < vw;
+  }
+
+  function reasonablySized(rect) {
+    return rect.height <= vh * 1.5 && rect.width <= vw * 1.5;
+  }
+
+  function walk(el) {
+    if (SKIP_TAGS.has(el.tagName)) return [];
+    const style = el.ownerDocument.defaultView.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') return [];
+
+    const rect = el.getBoundingClientRect();
+    // A real box (nonzero size) tells us where the element actually is,
+    // so an offscreen one can be pruned with confidence, and a reasonably
+    // sized on-screen one can be taken via innerText wholesale. A zero-size
+    // box (a `display: contents` layout wrapper, or any element with no
+    // rendered box of its own) tells us nothing either way - its children
+    // still have their own real boxes, so fall through to recursing into
+    // them rather than assuming "no box" means "not visible" (verified
+    // regression: bbc.com's story-card wrappers are `display: contents`,
+    // and treating their zero rect as offscreen silently dropped the
+    // actual headline text from every read()/waitUntil() call).
+    const hasBox = rect.width > 0 || rect.height > 0;
+    if (hasBox) {
+      if (!inViewportRect(rect)) return [];
+      if (reasonablySized(rect) || el.children.length === 0) {
+        const text = (el.innerText || '').trim();
+        return text ? [text] : [];
+      }
+    }
+    const parts = [];
+    for (const child of el.children) parts.push(...walk(child));
+    return parts;
+  }
+
+  return walk(document.body).join('\n\n').slice(0, maxChars);
+}
+
+export { collectInteractiveElements, collectVisibleText };
