@@ -50,7 +50,7 @@ Options: `llm`, `llmOptions`, `jev`, `jevOptions`, `maxElements`, `actionTimeout
 
 ## Using Jev to make decisions
 
-[TypeSafe's Jev](https://typesafe.ai/) is *great** at deciding "which element" is best: 
+[TypeSafe's Jev](https://typesafe.ai/) is great at deciding "which element" is best: 
 - When`find()` becomes one yes/no question per element.
 - When `do()`'s target becomes a choice question. 
 
@@ -58,8 +58,6 @@ To enable it, you can pass `TYPESAFE_API_TOKEN` and enable it in your script:
 ```js
 const page = await browser.newPage({ decisionProvider: 'jev' });
 ```
-
-<small>Measured on `find()` against Wikipedia, 5 runs each: **~510ms with Jev vs ~1483ms with Anthropic**</small>
 
 ## Caveats
 
