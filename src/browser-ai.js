@@ -1,7 +1,7 @@
 import { browser as k6Browser } from 'k6/browser';
 import { createLLMClient } from './llm.js';
 import { createJevClient } from './jev.js';
-import { collectInteractiveElements } from './dom.js';
+import { collectInteractiveElements, collectVisibleText } from './dom.js';
 
 const DEFAULT_MAX_ELEMENTS = 150;
 const DEFAULT_MAX_AGENT_STEPS = 10;
@@ -17,6 +17,20 @@ const JEV_DONE_THRESHOLD = 0.8;
 const WAIT_MET_THRESHOLD = 0.65;
 const DEFAULT_WAIT_TIMEOUT_MS = 10000;
 const DEFAULT_WAIT_INTERVAL_MS = 500;
+// Typing into a search box often triggers an async autocomplete update
+// that transiently changes the element list - poll until the count stops
+// changing instead of guessing a fixed delay.
+const SETTLE_POLL_MS = 150;
+const SETTLE_MAX_WAIT_MS = 2000;
+// A snapshot-resolved target can end up under a dropdown/overlay by the
+// time the action runs - hit-test its own center and wait it out instead
+// of letting a plain actionability timeout run its full course.
+const OCCLUSION_POLL_MS = 150;
+const OCCLUSION_MAX_WAIT_MS = 1200;
+// Re-deriving the exact same action from a *fresh* snapshot this many
+// times in a row is a click-loop, not deliberate repetition - stop rather
+// than burn the rest of maxSteps on it.
+const STUCK_REPEAT_THRESHOLD = 3;
 
 const DO_SYSTEM_PROMPT =
   'You control a web browser during a load test. You are given a natural ' +
@@ -55,6 +69,30 @@ const WAIT_SYSTEM_PROMPT =
   'visible text. Reply with ONLY compact JSON: {"met": true|false}, no ' +
   'prose, no markdown fences.';
 
+// A separate prompt/call from AGENT_SYSTEM_PROMPT, grounded in plain page
+// text rather than the same element list the acting decision used - see
+// verifyGoalMet() for why a self-reported "done" isn't trusted on its own.
+const VERIFY_DONE_SYSTEM_PROMPT =
+  'You independently audit whether a browser-automation goal has actually ' +
+  'been achieved, based only on the current page\'s visible text and URL - ' +
+  'not on the acting model\'s own claim. Be skeptical: if the page doesn\'t ' +
+  'clearly show the goal is met, say it is not. Reply with ONLY compact ' +
+  'JSON: {"met": true|false}, no prose, no markdown fences.';
+
+// Module-level (not per browserAI() call) so it's shared across every
+// do()/agent() decision in this process - a fresh page wrap on the next
+// iteration still remembers what earlier ones did. This is purely extra
+// context fed into the decision prompt to help disambiguate ("the other
+// checkbox", "already navigated past login") - it never skips a decision
+// call. Capped so a long-running script doesn't grow the prompt forever.
+const CONTEXT_LIMIT = 20;
+const sharedContext = [];
+
+function recordContext(entry) {
+  sharedContext.push(entry);
+  if (sharedContext.length > CONTEXT_LIMIT) sharedContext.shift();
+}
+
 /**
  * Wraps a k6 browser `page` with a small `.ai` namespace (do / find / read /
  * agent) backed by an LLM (or, optionally, TypeSafe's Jev - see below),
@@ -74,6 +112,12 @@ const WAIT_SYSTEM_PROMPT =
  *     from the page (a <select>'s own options) still falls back to a single
  *     small LLM call - and ai.read() *always* uses the LLM, regardless of
  *     this setting, since it fundamentally requires generated text.
+ *
+ * `options.context` (default off) feeds a rolling log of past do()/agent()
+ * decisions - shared across every browserAI() call in this process, so it
+ * survives across iterations, not just within one page - into every future
+ * decision's prompt, purely to help it reason (e.g. disambiguate "the other
+ * checkbox," know it already navigated somewhere). It never skips a call.
  */
 export function browserAI(page, options = {}) {
   let llm = options.llm || null;
@@ -82,6 +126,7 @@ export function browserAI(page, options = {}) {
   const maxElements = options.maxElements || DEFAULT_MAX_ELEMENTS;
   const actionTimeout = options.actionTimeout || DEFAULT_ACTION_TIMEOUT_MS;
   const verbose = !!options.verbose;
+  const contextEnabled = !!options.context;
 
   function getLlm() {
     if (!llm) llm = createLLMClient(options.llmOptions || {});
@@ -119,6 +164,56 @@ export function browserAI(page, options = {}) {
     );
   }
 
+  // Fingerprints of common bot-detection interstitials, checked whenever a
+  // snapshot is empty or an action never becomes actionable - a challenge
+  // page often still has a few real elements (a spinner, a skip-nav link),
+  // just none of them the thing the instruction asked for. This only makes
+  // the error honest about *why*; it never tries to solve or bypass one.
+  const BOT_CHALLENGE_MARKERS = [
+    'captcha-delivery.com',
+    'perimeterx',
+    '_px-captcha',
+    'cf-chl',
+    'checking your browser',
+    'hcaptcha.com',
+    'g-recaptcha',
+  ];
+
+  function pageHtmlSnippet() {
+    return document.documentElement.outerHTML.slice(0, 4000);
+  }
+
+  async function botChallengeHint() {
+    try {
+      const html = (await evaluateStable(pageHtmlSnippet)).toLowerCase();
+      const hit = BOT_CHALLENGE_MARKERS.find((m) => html.includes(m));
+      if (hit) {
+        return (
+          ` - the page looks like a bot-detection/CAPTCHA challenge (matched "${hit}"). ` +
+          'browser-ai does not attempt to bypass these.'
+        );
+      }
+    } catch (err) {
+      // Best-effort diagnostic only - never let it mask the real error.
+    }
+    return '';
+  }
+
+  // Polls the raw element count (cheap - no maxElements truncation warning,
+  // no empty-snapshot retry, just "how many interactive elements right now")
+  // until two consecutive reads agree, meaning whatever async UI update was
+  // in flight (autocomplete, a suggestions dropdown, ...) has settled.
+  async function waitForStableElementCount() {
+    const start = Date.now();
+    let prevCount = -1;
+    while (Date.now() - start < SETTLE_MAX_WAIT_MS) {
+      const { elements } = await evaluateStable(collectInteractiveElements, maxElements);
+      if (elements.length === prevCount) return;
+      prevCount = elements.length;
+      await new Promise((resolve) => setTimeout(resolve, SETTLE_POLL_MS));
+    }
+  }
+
   async function snapshot() {
     let { elements, truncated } = await evaluateStable(collectInteractiveElements, maxElements);
     warnIfTruncated(truncated);
@@ -135,9 +230,59 @@ export function browserAI(page, options = {}) {
   }
 
   function askLlm(system, user) {
+    if (verbose) console.log(`[browser-ai] llm prompt: ${user}`);
     const raw = getLlm().complete(system, user);
     if (verbose) console.log(`[browser-ai] llm raw response: ${raw}`);
     return parseJSON(raw);
+  }
+
+  // Self-contained (no closures over outer scope) - serialized and run in
+  // the browser context via page.evaluate, same convention as dom.js.
+  function reachabilityProbe({ selector, frameSelector }) {
+    let doc = document;
+    if (frameSelector) {
+      const frame = document.querySelector(frameSelector);
+      const innerDoc = frame && frame.contentDocument;
+      if (!innerDoc) return { exists: false };
+      doc = innerDoc;
+    }
+    const el = doc.querySelector(selector);
+    if (!el) return { exists: false };
+
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return { exists: true, reachable: false, reason: 'zero-size' };
+
+    const view = doc.defaultView;
+    const cx = Math.min(Math.max(rect.left + rect.width / 2, 0), view.innerWidth - 1);
+    const cy = Math.min(Math.max(rect.top + rect.height / 2, 0), view.innerHeight - 1);
+    const hit = doc.elementFromPoint(cx, cy);
+    if (!hit) return { exists: true, reachable: false, reason: 'nothing at its own center point' };
+
+    // Reachable if the hit-test lands on the element itself, a descendant
+    // (e.g. an icon/span inside a button), or an ancestor (normal nested
+    // markup) - anything else is a genuinely unrelated element sitting on
+    // top of it.
+    if (hit === el || el.contains(hit) || hit.contains(el)) return { exists: true, reachable: true };
+
+    const describe = (n) => {
+      const cls = typeof n.className === 'string' ? n.className.trim().split(/\s+/).slice(0, 2).join('.') : '';
+      return `${n.tagName.toLowerCase()}${n.id ? '#' + n.id : ''}${cls ? '.' + cls : ''}`;
+    };
+    return { exists: true, reachable: false, reason: 'covered', coveredBy: describe(hit) };
+  }
+
+  // Polls the hit-test above until the target either becomes reachable or
+  // the wait runs out, rather than assuming a single check catches a
+  // transient overlay (an animating dropdown, a closing modal) mid-motion.
+  async function waitUntilReachable(step) {
+    const start = Date.now();
+    let last = null;
+    while (Date.now() - start < OCCLUSION_MAX_WAIT_MS) {
+      last = await evaluateStable(reachabilityProbe, { selector: step.selector, frameSelector: step.frameSelector });
+      if (!last.exists || last.reachable) return last;
+      await new Promise((resolve) => setTimeout(resolve, OCCLUSION_POLL_MS));
+    }
+    return last;
   }
 
   async function runAction(locator, step, actionOpts) {
@@ -169,6 +314,17 @@ export function browserAI(page, options = {}) {
       ? page.frameLocator(step.frameSelector).locator(step.selector)
       : page.locator(step.selector);
 
+    // Only meaningful for the same actions force-retrying below applies to
+    // - a snapshot-resolved target can be a moment out of date, and this
+    // catches "something else is on top of it right now" specifically,
+    // as opposed to "it's disabled" or "it doesn't exist" (already ruled
+    // out at snapshot time).
+    let occlusion = null;
+    if (FORCEABLE_ACTIONS.includes(step.action)) {
+      const probe = await waitUntilReachable(step);
+      if (probe && probe.exists && !probe.reachable) occlusion = probe;
+    }
+
     try {
       await runAction(locator, step, opts);
     } catch (err) {
@@ -177,10 +333,41 @@ export function browserAI(page, options = {}) {
       // though they're the right target - force the action once instead
       // of giving up, rather than eating the full default timeout.
       const canForce = FORCEABLE_ACTIONS.includes(step.action) && !opts.force;
-      if (!canForce) throw err;
-      await runAction(locator, step, { ...opts, force: true });
+      if (!canForce) throw await withActionFailureHint(err, occlusion);
+      try {
+        await runAction(locator, step, { ...opts, force: true });
+      } catch (forceErr) {
+        throw await withActionFailureHint(forceErr, occlusion);
+      }
+    }
+    if (step.action === 'fill' || step.action === 'type') {
+      await waitForStableElementCount();
     }
     return step;
+  }
+
+  // A target element that never becomes actionable - the actual symptom
+  // here was a real Playwright timeout clicking a legitimate-looking
+  // element, not an empty snapshot - has two known causes worth telling
+  // apart instead of leaving as a bare timeout: something else is sitting
+  // on top of it right now (the occlusion probe above already checked and
+  // waited for this specifically), or the whole page is a bot-detection
+  // interstitial (e.g. eBay serving a "checking your browser" page
+  // mid-session, after a search box was typed into). Enrich rather than
+  // replace the original error so a genuinely bad selector still reads
+  // like one.
+  async function withActionFailureHint(err, occlusion) {
+    const text = (err && err.message) || String(err);
+    if (occlusion) {
+      const covering = occlusion.coveredBy ? ` by "${occlusion.coveredBy}"` : '';
+      return new Error(
+        `${text} - the target element exists but was covered${covering} the last time it was checked, ` +
+          'not a wrong element pick.'
+      );
+    }
+    const hint = await botChallengeHint();
+    if (!hint) return err;
+    return new Error(`${text}${hint}`);
   }
 
   // Shared by ai.do() and ai.agent(): resolve an instruction/goal against
@@ -192,12 +379,14 @@ export function browserAI(page, options = {}) {
   }
 
   function decideWithLlm(instruction, elements, { includeDone, history } = {}) {
+    const priorContext = contextNote();
     if (includeDone) {
       const decision = askLlm(
         AGENT_SYSTEM_PROMPT,
         `Goal: ${instruction}\n\n` +
           `Actions taken so far: ${JSON.stringify(history || [])}\n\n` +
-          elementPrompt(instruction, elements)
+          elementPrompt(instruction, elements) +
+          priorContext
       );
       if (decision && decision.done) return { done: true, reason: decision.reason };
       return decision;
@@ -206,8 +395,18 @@ export function browserAI(page, options = {}) {
     return askLlm(
       DO_SYSTEM_PROMPT,
       elementPrompt(instruction, elements) +
+        priorContext +
         '\n\nRespond with ONLY: {"id": <element id>, ' +
         '"action": "click"|"fill"|"check"|"uncheck"|"select"|"press", "value": <string, optional>}'
+    );
+  }
+
+  // Empty unless options.context is on - see sharedContext above.
+  function contextNote() {
+    if (!contextEnabled || sharedContext.length === 0) return '';
+    return (
+      '\n\nActions taken earlier in this run (for context - may be on a ' +
+      `different page):\n${JSON.stringify(sharedContext)}`
     );
   }
 
@@ -251,6 +450,9 @@ export function browserAI(page, options = {}) {
     }
 
     const state = { instruction, actions_already_taken: history || [] };
+    if (contextEnabled && sharedContext.length > 0) {
+      state.actions_taken_earlier_in_this_run = sharedContext;
+    }
     const answers = client.evaluate(state, questions);
     if (verbose) {
       console.log(`[browser-ai:jev] state=${JSON.stringify(state)} answers=${JSON.stringify(answers)}`);
@@ -336,7 +538,9 @@ export function browserAI(page, options = {}) {
 
     const elements = await snapshot();
     if (elements.length === 0) {
-      throw new Error(`browser-ai: no visible interactive elements found for "${resolvedInstruction}"`);
+      throw new Error(
+        `browser-ai: no visible interactive elements found for "${resolvedInstruction}"${await botChallengeHint()}`
+      );
     }
     const decision = await decideAction(resolvedInstruction, elements);
 
@@ -356,6 +560,10 @@ export function browserAI(page, options = {}) {
       action: decision.action,
       value: decision.value,
     };
+    // Placeholder value only (if any) - never the secret-substituted one.
+    if (contextEnabled) {
+      recordContext({ instruction: resolvedInstruction, description: target.text, action: step.action });
+    }
     await perform({ ...step, value: substitutePlaceholders(step.value, secrets) }, playwrightOpts);
     return step;
   }
@@ -422,7 +630,7 @@ export function browserAI(page, options = {}) {
   // only answers typed questions and never emits free text.
   async function read(instruction, readOpts = {}) {
     const resolvedInstruction = substitutePlaceholders(instruction, readOpts.variables);
-    const text = await evaluateStable(() => document.body.innerText.slice(0, 12000));
+    const text = await evaluateStable(collectVisibleText, 12000);
     const schemaHint = readOpts.schema
       ? `The result must match this JSON schema exactly:\n${JSON.stringify(readOpts.schema)}`
       : 'Return the most reasonable JSON representation of the requested data.';
@@ -477,7 +685,7 @@ export function browserAI(page, options = {}) {
   }
 
   async function checkConditionWithLlm(condition) {
-    const text = await evaluateStable(() => document.body.innerText.slice(0, 4000));
+    const text = await evaluateStable(collectVisibleText, 4000);
     const decision = askLlm(
       WAIT_SYSTEM_PROMPT,
       `Condition: ${condition}\n\nCurrent URL: ${page.url()}\n\nPage text:\n${text}`
@@ -487,12 +695,39 @@ export function browserAI(page, options = {}) {
 
   async function checkConditionWithJev(condition) {
     const client = getJev();
-    const text = await evaluateStable(() => document.body.innerText.slice(0, 4000));
+    const text = await evaluateStable(collectVisibleText, 4000);
     const answers = client.evaluate(
       { condition, url: page.url(), page_text: text },
       { met: { type: 'noul', instructions: `Is the following currently true about the page: ${condition}` } }
     );
     return !!(answers.met && answers.met.noul >= WAIT_MET_THRESHOLD);
+  }
+
+  // Independently audits a self-reported agent() "done" against the
+  // page's own visible text, rather than trusting the same decision call
+  // that produced it - a genuinely different signal (plain text vs. the
+  // element-list-grounded decision), not just asking the same question
+  // twice. Always the LLM path regardless of decisionProvider: the point
+  // is a second, differently-grounded check, not a cheaper one.
+  async function verifyGoalMet(goal, history) {
+    const text = await evaluateStable(collectVisibleText, 4000);
+    const decision = askLlm(
+      VERIFY_DONE_SYSTEM_PROMPT,
+      `Goal: ${goal}\n\nActions already taken: ${JSON.stringify(history)}\n\n` +
+        `Current URL: ${page.url()}\n\nCurrent visible page text:\n${text}`
+    );
+    return !!(decision && decision.met);
+  }
+
+  function stepsEqual(a, b) {
+    return (
+      !!a &&
+      !!b &&
+      a.selector === b.selector &&
+      a.frameSelector === b.frameSelector &&
+      a.action === b.action &&
+      a.value === b.value
+    );
   }
 
   async function agent(goal, agentOpts = {}) {
@@ -504,12 +739,28 @@ export function browserAI(page, options = {}) {
     for (let step = 0; step < maxSteps; step++) {
       const elements = await snapshot();
       if (elements.length === 0) {
-        throw new Error(`browser-ai: no visible interactive elements found for goal "${resolvedGoal}"`);
+        throw new Error(
+          `browser-ai: no visible interactive elements found for goal "${resolvedGoal}"${await botChallengeHint()}`
+        );
       }
       const decision = await decideAction(resolvedGoal, elements, { includeDone: true, history });
 
       if (decision && decision.done) {
-        return { done: true, reason: decision.reason, steps: history };
+        const shouldVerify = agentOpts.verifyDone !== false;
+        if (!shouldVerify || (await verifyGoalMet(resolvedGoal, history))) {
+          return { done: true, reason: decision.reason, steps: history };
+        }
+        // Self-reported "done" didn't hold up against the page's own
+        // text - don't trust it, and don't return early. Loop again: a
+        // fresh snapshot next iteration may lead the model to a different
+        // (correct) decision, still bounded by maxSteps either way.
+        if (verbose) {
+          console.warn(
+            `[browser-ai] agent() reported done ("${decision.reason}") but independent verification ` +
+              'disagreed - continuing.'
+          );
+        }
+        continue;
       }
       if (!decision || decision.id === undefined || decision.id === null) {
         throw new Error(`browser-ai: agent could not resolve a next step for goal "${resolvedGoal}"`);
@@ -529,9 +780,22 @@ export function browserAI(page, options = {}) {
         action: decision.action,
         value: decision.value,
       };
+
+      const recentHistory = history.slice(-(STUCK_REPEAT_THRESHOLD - 1));
+      if (recentHistory.length === STUCK_REPEAT_THRESHOLD - 1 && recentHistory.every((h) => stepsEqual(h, plannedStep))) {
+        throw new Error(
+          `browser-ai: agent() looks stuck - re-derived the same action (${plannedStep.action} on ` +
+            `"${plannedStep.selector}") from a fresh snapshot ${STUCK_REPEAT_THRESHOLD} times in a row for ` +
+            `goal "${resolvedGoal}", with no apparent progress. Stopping rather than exhausting maxSteps.`
+        );
+      }
+
       await perform({ ...plannedStep, value: substitutePlaceholders(plannedStep.value, secrets) });
       const record = { id: decision.id, description: target.text, ...plannedStep };
       history.push(record);
+      if (contextEnabled) {
+        recordContext({ instruction: resolvedGoal, description: target.text, action: plannedStep.action });
+      }
       if (agentOpts.onStep) agentOpts.onStep(record, step);
     }
 
@@ -562,6 +826,7 @@ const AI_OPTION_KEYS = [
   'actionTimeout',
   'verbose',
   'decisionProvider',
+  'context',
 ];
 
 function splitAIOptions(options = {}) {
