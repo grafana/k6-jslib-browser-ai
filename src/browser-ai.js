@@ -692,7 +692,9 @@ export function browserAI(page, options = {}) {
     const resolvedAssertion = substitutePlaceholders(assertion, assertOpts.variables);
     const { met, reason } = await checkCondition(resolvedAssertion);
     if (met) return;
-    throw new Error(`browser-ai: assertion failed: "${resolvedAssertion}"${reason ? ` - ${reason}` : ''}`);
+    throw new Error(
+      `browser-ai: assertion failed: "${resolvedAssertion}" - ${reason || 'condition was not met'}`
+    );
   }
 
   async function checkConditionWithLlm(condition) {
