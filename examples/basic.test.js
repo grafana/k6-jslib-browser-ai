@@ -25,15 +25,15 @@ export default async function () {
     });
     console.log(`agent(): ${JSON.stringify(toggled)}`);
 
-    const login = await page.ai.find('the login link in the header');
-    console.log(`find(): ${JSON.stringify(login)}`);
+    const login = await page.ai.observe('the login link in the header');
+    console.log(`observe(): ${JSON.stringify(login)}`);
 
-    await page.ai.do('click the login link in the header');
+    await page.ai.act('click the login link in the header');
     await page.waitForLoadState('networkidle');
-    console.log(`url after do(): ${page.url()}`);
+    console.log(`url after act(): ${page.url()}`);
 
-    const heading = await page.ai.read('what is the page heading/title text?');
-    console.log(`read(): ${JSON.stringify(heading)}`);
+    const heading = await page.ai.extract('what is the page heading/title text?');
+    console.log(`extract(): ${JSON.stringify(heading)}`);
 
     ok = true;
   } finally {

@@ -50,13 +50,13 @@ export default async function () {
 
   await run('info.cern.ch / read', async (page) => {
     await page.goto('https://info.cern.ch/', { waitUntil: 'networkidle' });
-    return page.ai.read('what is the main heading and the first sentence of body text?');
+    return page.ai.extract('what is the main heading and the first sentence of body text?');
   });
 
   await run('hackernews / find+do+read', async (page) => {
     await page.goto('https://news.ycombinator.com/', { waitUntil: 'networkidle' });
-    const top = await page.ai.find('the title link of the very first story in the list');
-    await page.ai.do('click the "more" link at the bottom of the story list');
+    const top = await page.ai.observe('the title link of the very first story in the list');
+    await page.ai.act('click the "more" link at the bottom of the story list');
     await page.waitForLoadState('networkidle');
     const url = page.url();
     return { top, urlAfterMore: url };
@@ -64,11 +64,11 @@ export default async function () {
 
   await run('the-internet login / do x3 + read', async (page) => {
     await page.goto('https://the-internet.herokuapp.com/login', { waitUntil: 'networkidle' });
-    await page.ai.do('type "tomsmith" into the username field');
-    await page.ai.do('type "SuperSecretPassword!" into the password field');
-    await page.ai.do('click the login button');
+    await page.ai.act('type "tomsmith" into the username field');
+    await page.ai.act('type "SuperSecretPassword!" into the password field');
+    await page.ai.act('click the login button');
     await page.waitForLoadState('networkidle');
-    return page.ai.read('what is the success/flash message shown after login?');
+    return page.ai.extract('what is the success/flash message shown after login?');
   });
 
   await run('the-internet checkboxes / agent', async (page) => {
@@ -80,186 +80,186 @@ export default async function () {
 
   await run('the-internet dropdown / do+read', async (page) => {
     await page.goto('https://the-internet.herokuapp.com/dropdown', { waitUntil: 'networkidle' });
-    await page.ai.do('select "Option 2" from the dropdown');
-    return page.ai.read('which option is currently selected in the dropdown?');
+    await page.ai.act('select "Option 2" from the dropdown');
+    return page.ai.extract('which option is currently selected in the dropdown?');
   });
 
   await run('demoqa / find+read', async (page) => {
     await page.goto('https://demoqa.com/', { waitUntil: 'networkidle' });
-    const elementsCard = await page.ai.find('the card/box labeled "Elements"');
-    const heading = await page.ai.read('what is the site name shown in the top left logo?');
+    const elementsCard = await page.ai.observe('the card/box labeled "Elements"');
+    const heading = await page.ai.extract('what is the site name shown in the top left logo?');
     return { elementsCard, heading };
   });
 
   await run('saucedemo login / do x3 + read', async (page) => {
     await page.goto('https://www.saucedemo.com/', { waitUntil: 'networkidle' });
-    await page.ai.do('type "standard_user" into the username field');
-    await page.ai.do('type "secret_sauce" into the password field');
-    await page.ai.do('click the login button');
+    await page.ai.act('type "standard_user" into the username field');
+    await page.ai.act('type "secret_sauce" into the password field');
+    await page.ai.act('click the login button');
     await page.waitForLoadState('networkidle');
-    return page.ai.read('what is the page title/heading shown after logging in?');
+    return page.ai.extract('what is the page title/heading shown after logging in?');
   });
 
   await run('httpbin form / do x3 + read', async (page) => {
     await page.goto('https://httpbin.org/forms/post', { waitUntil: 'networkidle' });
-    await page.ai.do('type "Ada Lovelace" into the customer name field');
-    await page.ai.do('select medium size for the pizza size option');
-    await page.ai.do('click the submit order button');
+    await page.ai.act('type "Ada Lovelace" into the customer name field');
+    await page.ai.act('select medium size for the pizza size option');
+    await page.ai.act('click the submit order button');
     await page.waitForLoadState('networkidle');
-    return page.ai.read('extract the "custname" and "size" fields from the JSON shown on this page');
+    return page.ai.extract('extract the "custname" and "size" fields from the JSON shown on this page');
   });
 
   // --- real top-traffic sites: heavy SPAs, bot walls, cookie banners ---
 
   await run('wikipedia.org / find+do+read', async (page) => {
     await page.goto('https://en.wikipedia.org/wiki/Main_Page', { waitUntil: 'load' });
-    const search = await page.ai.find('the search input box');
-    await page.ai.do('type "Playwright" into the search box');
-    const title = await page.ai.read('what is the title of "Today\'s featured article"?');
+    const search = await page.ai.observe('the search input box');
+    await page.ai.act('type "Playwright" into the search box');
+    const title = await page.ai.extract('what is the title of "Today\'s featured article"?');
     return { search, title };
   });
 
   await run('github.com / find+read', async (page) => {
     await page.goto('https://github.com/', { waitUntil: 'load' });
-    const signIn = await page.ai.find('the sign in link');
-    const tagline = await page.ai.read('what is the main marketing headline on this page?');
+    const signIn = await page.ai.observe('the sign in link');
+    const tagline = await page.ai.extract('what is the main marketing headline on this page?');
     return { signIn, tagline };
   });
 
   await run('youtube.com / do+read', async (page) => {
     await page.goto('https://www.youtube.com/', { waitUntil: 'load' });
     await dismissCookies(page);
-    await page.ai.do('type "k6 load testing" into the search box');
-    await page.ai.do('press enter to submit the search');
+    await page.ai.act('type "k6 load testing" into the search box');
+    await page.ai.act('press enter to submit the search');
     await page.waitForLoadState('load');
-    return page.ai.read('is a list of video results now showing? give a one-word yes/no');
+    return page.ai.extract('is a list of video results now showing? give a one-word yes/no');
   });
 
   await run('stackoverflow.com / do+read', async (page) => {
     await page.goto('https://stackoverflow.com/', { waitUntil: 'load' });
     await dismissCookies(page);
-    await page.ai.do('type "async await javascript" into the search box');
-    return page.ai.read('what placeholder or label does the search box show?');
+    await page.ai.act('type "async await javascript" into the search box');
+    return page.ai.extract('what placeholder or label does the search box show?');
   });
 
   await run('reddit.com / read', async (page) => {
     await page.goto('https://www.reddit.com/', { waitUntil: 'load' });
     await dismissCookies(page);
-    return page.ai.read('what is the title of the first post shown in the feed?');
+    return page.ai.extract('what is the title of the first post shown in the feed?');
   });
 
   await run('amazon.com / do+read', async (page) => {
     await page.goto('https://www.amazon.com/', { waitUntil: 'load' });
     await dismissCookies(page);
-    await page.ai.do('type "wireless mouse" into the search box');
-    await page.ai.do('click the search submit button (magnifying glass)');
+    await page.ai.act('type "wireless mouse" into the search box');
+    await page.ai.act('click the search submit button (magnifying glass)');
     await page.waitForLoadState('load');
-    return page.ai.read('did the search return a list of products? give a one-word yes/no');
+    return page.ai.extract('did the search return a list of products? give a one-word yes/no');
   });
 
   await run('google.com / do+read', async (page) => {
     await page.goto('https://www.google.com/', { waitUntil: 'load' });
     await dismissCookies(page);
-    await page.ai.do('type "k6 browser testing" into the search box');
-    return page.ai.read('what text is currently in the search box?');
+    await page.ai.act('type "k6 browser testing" into the search box');
+    return page.ai.extract('what text is currently in the search box?');
   });
 
   await run('bing.com / do+read', async (page) => {
     await page.goto('https://www.bing.com/', { waitUntil: 'load' });
     await dismissCookies(page);
-    await page.ai.do('type "k6 browser testing" into the search box');
-    await page.ai.do('press enter to submit the search');
+    await page.ai.act('type "k6 browser testing" into the search box');
+    await page.ai.act('press enter to submit the search');
     await page.waitForLoadState('load');
-    return page.ai.read('did the search return a list of results? give a one-word yes/no');
+    return page.ai.extract('did the search return a list of results? give a one-word yes/no');
   });
 
   await run('linkedin.com / find+read', async (page) => {
     await page.goto('https://www.linkedin.com/', { waitUntil: 'load' });
     await dismissCookies(page);
-    const email = await page.ai.find('the email or phone input field on the sign-in form');
-    const heading = await page.ai.read('what is the main headline shown on this page?');
+    const email = await page.ai.observe('the email or phone input field on the sign-in form');
+    const heading = await page.ai.extract('what is the main headline shown on this page?');
     return { email, heading };
   });
 
   await run('x.com / find+read', async (page) => {
     await page.goto('https://x.com/', { waitUntil: 'load' });
     await dismissCookies(page);
-    const loginLink = await page.ai.find('a link or button to sign in / log in');
-    const heading = await page.ai.read('what is the main heading or slogan shown on this page?');
+    const loginLink = await page.ai.observe('a link or button to sign in / log in');
+    const heading = await page.ai.extract('what is the main heading or slogan shown on this page?');
     return { loginLink, heading };
   });
 
   await run('facebook.com / find+read', async (page) => {
     await page.goto('https://www.facebook.com/', { waitUntil: 'load' });
     await dismissCookies(page);
-    const email = await page.ai.find('the email or phone number input field');
-    const heading = await page.ai.read('what is the main heading shown on this page?');
+    const email = await page.ai.observe('the email or phone number input field');
+    const heading = await page.ai.extract('what is the main heading shown on this page?');
     return { email, heading };
   });
 
   await run('instagram.com / read', async (page) => {
     await page.goto('https://www.instagram.com/', { waitUntil: 'load' });
     await dismissCookies(page);
-    return page.ai.read('what is the main heading or tagline shown on this page?');
+    return page.ai.extract('what is the main heading or tagline shown on this page?');
   });
 
   await run('netflix.com / find+read', async (page) => {
     await page.goto('https://www.netflix.com/', { waitUntil: 'load' });
     await dismissCookies(page);
-    const email = await page.ai.find('the email address input field');
-    const heading = await page.ai.read('what is the main marketing headline on this page?');
+    const email = await page.ai.observe('the email address input field');
+    const heading = await page.ai.extract('what is the main marketing headline on this page?');
     return { email, heading };
   });
 
   await run('microsoft.com / find+read', async (page) => {
     await page.goto('https://www.microsoft.com/', { waitUntil: 'load' });
     await dismissCookies(page);
-    const search = await page.ai.find('the search link or icon in the header');
-    const heading = await page.ai.read('what is the main headline on this page?');
+    const search = await page.ai.observe('the search link or icon in the header');
+    const heading = await page.ai.extract('what is the main headline on this page?');
     return { search, heading };
   });
 
   await run('apple.com / find+read', async (page) => {
     await page.goto('https://www.apple.com/', { waitUntil: 'load' });
     await dismissCookies(page);
-    const search = await page.ai.find('the search link or icon in the global nav');
-    const heading = await page.ai.read('what product is being promoted at the top of this page?');
+    const search = await page.ai.observe('the search link or icon in the global nav');
+    const heading = await page.ai.extract('what product is being promoted at the top of this page?');
     return { search, heading };
   });
 
   await run('cnn.com / read', async (page) => {
     await page.goto('https://www.cnn.com/', { waitUntil: 'load' });
     await dismissCookies(page);
-    return page.ai.read('what is the top headline shown on the homepage?');
+    return page.ai.extract('what is the top headline shown on the homepage?');
   });
 
   await run('bbc.com / find+read', async (page) => {
     await page.goto('https://www.bbc.com/', { waitUntil: 'load' });
     await dismissCookies(page);
-    const search = await page.ai.find('the search icon or link in the header');
-    const headline = await page.ai.read('what is the top news headline shown on this page?');
+    const search = await page.ai.observe('the search icon or link in the header');
+    const headline = await page.ai.extract('what is the top news headline shown on this page?');
     return { search, headline };
   });
 
   await run('nytimes.com / read', async (page) => {
     await page.goto('https://www.nytimes.com/', { waitUntil: 'load' });
     await dismissCookies(page);
-    return page.ai.read('what is the top headline shown on the homepage?');
+    return page.ai.extract('what is the top headline shown on the homepage?');
   });
 
   await run('imdb.com / do+read', async (page) => {
     await page.goto('https://www.imdb.com/', { waitUntil: 'load' });
     await dismissCookies(page);
-    await page.ai.do('type "Inception" into the search box');
-    return page.ai.read('what text is currently in the search box?');
+    await page.ai.act('type "Inception" into the search box');
+    return page.ai.extract('what text is currently in the search box?');
   });
 
   await run('ebay.com / do+read', async (page) => {
     await page.goto('https://www.ebay.com/', { waitUntil: 'load' });
     await dismissCookies(page);
-    await page.ai.do('type "mechanical keyboard" into the search box');
-    await page.ai.do('click the search submit button');
+    await page.ai.act('type "mechanical keyboard" into the search box');
+    await page.ai.act('click the search submit button');
     await page.waitForLoadState('load');
-    return page.ai.read('did the search return a list of items? give a one-word yes/no');
+    return page.ai.extract('did the search return a list of items? give a one-word yes/no');
   });
 }
