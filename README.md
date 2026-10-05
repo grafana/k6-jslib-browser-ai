@@ -15,6 +15,9 @@ await page.ai.agent('dismiss the cookie banner, then open settings');
 
 // Wait for conditions
 await page.ai.waitUntil('the page has finished loading and is ready to interact with');
+
+// Assert a condition (throws if not met)
+await page.ai.assert('the order confirmation is showing');
 ```
 
 ## Requirements
@@ -39,6 +42,7 @@ ANTHROPIC_TOKEN=your_token k6 run examples/basic.test.js
 - `page.ai.read(instruction, { schema?, variables? })` - extract structured data
 - `page.ai.agent(goal, { maxSteps?, secrets?, variables?, verifyDone? })` - step until done. Independently re-checks the goal against the page's visible text.
 - `page.ai.waitUntil(condition, { timeout?, interval?, variables? })` - poll a condition instead of a hardcoded wait
+- `page.ai.assert(assertion, { variables? })` - check a condition once; throws if it isn't currently met
 
 `{{name}}` pulls from `secrets` (hidden from the LLM) or `variables` (visible to it).
 
