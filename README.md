@@ -42,9 +42,11 @@ ANTHROPIC_TOKEN=your_token k6 run examples/basic.test.js
 
 `{{name}}` pulls from `secrets` (hidden from the LLM) or `variables` (visible to it).
 
-Options: `llm`, `llmOptions`, `jev`, `jevOptions`, `maxElements`, `actionTimeout`, `verbose`, `decisionProvider`, `context`.
+Options: `llm`, `llmOptions`, `jev`, `jevOptions`, `maxElements`, `actionTimeout`, `decisionProvider`, `context`.
 
 `context: true` feeds a rolling log of past `do()`/`agent()` decisions into every future decision, to help it reason (e.g. "the other checkbox") - never to skip a call.
+
+Diagnostic logging (the LLM prompt/raw response, Jev state/answers) goes through `console.debug()`, so it's silent by default - run `k6 run --verbose your_script.js` (or `--log-level debug`) to see it, same as any other k6 module.
 
 `llmOptions.fallbackModel` - Anthropic's safety classifier occasionally refuses a request. On a refusal, the library retries once with this model.
 

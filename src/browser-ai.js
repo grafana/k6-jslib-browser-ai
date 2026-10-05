@@ -125,7 +125,6 @@ export function browserAI(page, options = {}) {
   const decisionProvider = options.decisionProvider || 'llm';
   const maxElements = options.maxElements || DEFAULT_MAX_ELEMENTS;
   const actionTimeout = options.actionTimeout || DEFAULT_ACTION_TIMEOUT_MS;
-  const verbose = !!options.verbose;
   const contextEnabled = !!options.context;
 
   function getLlm() {
@@ -230,9 +229,9 @@ export function browserAI(page, options = {}) {
   }
 
   function askLlm(system, user) {
-    if (verbose) console.log(`[browser-ai] llm prompt: ${user}`);
+    console.debug(`[browser-ai] llm prompt: ${user}`);
     const raw = getLlm().complete(system, user);
-    if (verbose) console.log(`[browser-ai] llm raw response: ${raw}`);
+    console.debug(`[browser-ai] llm raw response: ${raw}`);
     return parseJSON(raw);
   }
 
@@ -454,9 +453,7 @@ export function browserAI(page, options = {}) {
       state.actions_taken_earlier_in_this_run = sharedContext;
     }
     const answers = client.evaluate(state, questions);
-    if (verbose) {
-      console.log(`[browser-ai:jev] state=${JSON.stringify(state)} answers=${JSON.stringify(answers)}`);
-    }
+    console.debug(`[browser-ai:jev] state=${JSON.stringify(state)} answers=${JSON.stringify(answers)}`);
 
     if (includeDone && answers.done && answers.done.noul >= JEV_DONE_THRESHOLD) {
       return { done: true, reason: `jev: done-confidence ${answers.done.noul.toFixed(2)}` };
@@ -611,7 +608,7 @@ export function browserAI(page, options = {}) {
     if (Object.keys(questions).length === 0) return [];
 
     const answers = client.evaluate(instruction, questions);
-    if (verbose) console.log(`[browser-ai:jev] find answers=${JSON.stringify(answers)}`);
+    console.debug(`[browser-ai:jev] find answers=${JSON.stringify(answers)}`);
     return elements
       .filter((el) => {
         const a = answers[String(el.id)];
@@ -754,12 +751,10 @@ export function browserAI(page, options = {}) {
         // text - don't trust it, and don't return early. Loop again: a
         // fresh snapshot next iteration may lead the model to a different
         // (correct) decision, still bounded by maxSteps either way.
-        if (verbose) {
-          console.warn(
-            `[browser-ai] agent() reported done ("${decision.reason}") but independent verification ` +
-              'disagreed - continuing.'
-          );
-        }
+        console.warn(
+          `[browser-ai] agent() reported done ("${decision.reason}") but independent verification ` +
+            'disagreed - continuing.'
+        );
         continue;
       }
       if (!decision || decision.id === undefined || decision.id === null) {
@@ -824,7 +819,6 @@ const AI_OPTION_KEYS = [
   'jevOptions',
   'maxElements',
   'actionTimeout',
-  'verbose',
   'decisionProvider',
   'context',
 ];
