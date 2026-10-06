@@ -846,7 +846,7 @@ function splitAIOptions(options = {}) {
 //
 //   import { browser } from './src/browser-ai.js';
 //   const page = await browser.newPage({ decisionProvider: 'jev' });
-function wrapBrowserLike(target) {
+function wrapBrowserLike(target, contextAIOptions = {}) {
   return new Proxy(target, {
     get(obj, prop, receiver) {
       if (prop === 'newPage') {
@@ -854,11 +854,16 @@ function wrapBrowserLike(target) {
           const { aiOptions, nativeOptions } = splitAIOptions(options);
           const hasNative = Object.keys(nativeOptions).length > 0;
           const page = await (hasNative ? obj.newPage(nativeOptions) : obj.newPage());
-          return browserAI(page, aiOptions);
+          return browserAI(page, { ...contextAIOptions, ...aiOptions });
         };
       }
       if (prop === 'newContext') {
-        return async (...args) => wrapBrowserLike(await obj.newContext(...args));
+        return async (options) => {
+          const { aiOptions, nativeOptions } = splitAIOptions(options);
+          const hasNative = Object.keys(nativeOptions).length > 0;
+          const context = await (hasNative ? obj.newContext(nativeOptions) : obj.newContext());
+          return wrapBrowserLike(context, { ...contextAIOptions, ...aiOptions });
+        };
       }
       const value = Reflect.get(obj, prop, receiver);
       return typeof value === 'function' ? value.bind(obj) : value;
