@@ -63,11 +63,15 @@ const VALUE_SYSTEM_PROMPT =
   'automation instruction (e.g. what to type into a field). Reply with ONLY ' +
   'that string - no quotes, no prose, no markdown fences.';
 
-const WAIT_SYSTEM_PROMPT =
+// Shared by wait() (polls this) and assert() (checks it once) - both
+// ultimately ask the same question, "is this condition currently true on
+// the page?". The reason is unused by wait() but gives assert() a
+// meaningful failure message.
+const CONDITION_SYSTEM_PROMPT =
   'You check whether a condition about a web page is currently true during ' +
   'a load test. You are given the condition, the page URL, and the page\'s ' +
-  'visible text. Reply with ONLY compact JSON: {"met": true|false}, no ' +
-  'prose, no markdown fences.';
+  'visible text. Reply with ONLY compact JSON: {"met": true|false, "reason": ' +
+  '<string>}, no prose, no markdown fences.';
 
 // A separate prompt/call from AGENT_SYSTEM_PROMPT, grounded in plain page
 // text rather than the same element list the acting decision used - see
@@ -95,12 +99,12 @@ function recordContext(entry) {
 
 /**
  * Wraps a k6 browser `page` with a small `.ai` namespace (act / observe /
- * extract / agent) backed by an LLM (or, optionally, TypeSafe's Jev - see
- * below), while every native page method (goto, locator, evaluate,
- * screenshot, close, ...) keeps working untouched. The design is built
- * around k6's async browser module and load-testing constraints
- * specifically: cost and latency per VU per iteration, and no npm
- * dependencies.
+ * extract / agent / wait / assert) backed by an LLM (or, optionally,
+ * TypeSafe's Jev - see below), while every native page method (goto,
+ * locator, evaluate, screenshot, close, ...) keeps working untouched. The
+ * design is built around k6's async browser module and load-testing
+ * constraints specifically: cost and latency per VU per iteration, and no
+ * npm dependencies.
  *
  * `options.decisionProvider` picks how "which element / which action"
  * decisions get made:
@@ -673,10 +677,7 @@ export function browserAI(page, options = {}) {
     const start = Date.now();
 
     for (;;) {
-      const met =
-        decisionProvider === 'jev'
-          ? await checkConditionWithJev(resolvedCondition)
-          : await checkConditionWithLlm(resolvedCondition);
+      const { met } = await checkCondition(resolvedCondition);
       if (met) return;
       if (Date.now() - start >= timeout) {
         throw new Error(`browser-ai: wait() timed out after ${timeout}ms waiting for "${resolvedCondition}"`);
@@ -685,13 +686,25 @@ export function browserAI(page, options = {}) {
     }
   }
 
+  // A single, non-polling judgment - unlike wait(), never retried, since
+  // the point is to check *this* moment's state and fail loudly if it
+  // doesn't hold, not to wait for it to become true.
+  async function assert(assertion, assertOpts = {}) {
+    const resolvedAssertion = substitutePlaceholders(assertion, assertOpts.variables);
+    const { met, reason } = await checkCondition(resolvedAssertion);
+    if (met) return;
+    throw new Error(
+      `browser-ai: assertion failed: "${resolvedAssertion}" - ${reason || 'condition was not met'}`
+    );
+  }
+
   async function checkConditionWithLlm(condition) {
     const text = await evaluateStable(collectVisibleText, 4000);
     const decision = askLlm(
-      WAIT_SYSTEM_PROMPT,
+      CONDITION_SYSTEM_PROMPT,
       `Condition: ${condition}\n\nCurrent URL: ${page.url()}\n\nPage text:\n${text}`
     );
-    return !!(decision && decision.met);
+    return { met: !!(decision && decision.met), reason: decision && decision.reason };
   }
 
   async function checkConditionWithJev(condition) {
@@ -701,7 +714,11 @@ export function browserAI(page, options = {}) {
       { condition, url: page.url(), page_text: text },
       { met: { type: 'noul', instructions: `Is the following currently true about the page: ${condition}` } }
     );
-    return !!(answers.met && answers.met.noul >= WAIT_MET_THRESHOLD);
+    return { met: !!(answers.met && answers.met.noul >= WAIT_MET_THRESHOLD) };
+  }
+
+  async function checkCondition(condition) {
+    return decisionProvider === 'jev' ? checkConditionWithJev(condition) : checkConditionWithLlm(condition);
   }
 
   // Independently audits a self-reported agent() "done" against the
@@ -803,7 +820,7 @@ export function browserAI(page, options = {}) {
     return { done: false, reason: 'max steps reached', steps: history };
   }
 
-  const ai = { act, observe, extract, agent, wait };
+  const ai = { act, observe, extract, agent, wait, assert };
 
   return new Proxy(page, {
     get(target, prop, receiver) {
