@@ -32,19 +32,19 @@ const OCCLUSION_MAX_WAIT_MS = 1200;
 // than burn the rest of maxSteps on it.
 const STUCK_REPEAT_THRESHOLD = 3;
 
-const DO_SYSTEM_PROMPT =
+const ACT_SYSTEM_PROMPT =
   'You control a web browser during a load test. You are given a natural ' +
   'language instruction and a JSON array of visible interactive elements. ' +
   'Pick exactly one element and one action that best satisfies the ' +
   'instruction. Reply with ONLY compact JSON, no prose, no markdown fences.';
 
-const FIND_SYSTEM_PROMPT =
+const OBSERVE_SYSTEM_PROMPT =
   'You inspect a web page during a load test. You are given a natural ' +
   'language instruction and a JSON array of visible interactive elements. ' +
   'Identify every element that matches the instruction. Reply with ONLY a ' +
   'compact JSON array, no prose, no markdown fences.';
 
-const READ_SYSTEM_PROMPT =
+const EXTRACT_SYSTEM_PROMPT =
   'You extract structured data from web page text during a load test. ' +
   'Reply with ONLY compact JSON, no prose, no markdown fences.';
 
@@ -63,9 +63,9 @@ const VALUE_SYSTEM_PROMPT =
   'automation instruction (e.g. what to type into a field). Reply with ONLY ' +
   'that string - no quotes, no prose, no markdown fences.';
 
-// Shared by waitUntil() (polls this) and assert() (checks it once) - both
+// Shared by wait() (polls this) and assert() (checks it once) - both
 // ultimately ask the same question, "is this condition currently true on
-// the page?". The reason is unused by waitUntil but gives assert() a
+// the page?". The reason is unused by wait() but gives assert() a
 // meaningful failure message.
 const CONDITION_SYSTEM_PROMPT =
   'You check whether a condition about a web page is currently true during ' +
@@ -84,7 +84,7 @@ const VERIFY_DONE_SYSTEM_PROMPT =
   'JSON: {"met": true|false}, no prose, no markdown fences.';
 
 // Module-level (not per browserAI() call) so it's shared across every
-// do()/agent() decision in this process - a fresh page wrap on the next
+// act()/agent() decision in this process - a fresh page wrap on the next
 // iteration still remembers what earlier ones did. This is purely extra
 // context fed into the decision prompt to help disambiguate ("the other
 // checkbox", "already navigated past login") - it never skips a decision
@@ -98,26 +98,27 @@ function recordContext(entry) {
 }
 
 /**
- * Wraps a k6 browser `page` with a small `.ai` namespace (do / find / read /
- * agent / waitUntil / assert) backed by an LLM (or, optionally, TypeSafe's Jev - see below),
- * while every native page method (goto, locator, evaluate, screenshot,
- * close, ...) keeps working untouched. The design is built around k6's
- * async browser module and load-testing constraints specifically: cost and
- * latency per VU per iteration, and no npm dependencies.
+ * Wraps a k6 browser `page` with a small `.ai` namespace (act / observe /
+ * extract / agent / wait / assert) backed by an LLM (or, optionally,
+ * TypeSafe's Jev - see below), while every native page method (goto,
+ * locator, evaluate, screenshot, close, ...) keeps working untouched. The
+ * design is built around k6's async browser module and load-testing
+ * constraints specifically: cost and latency per VU per iteration, and no
+ * npm dependencies.
  *
  * `options.decisionProvider` picks how "which element / which action"
  * decisions get made:
  *   - 'llm' (default) - a single generative Anthropic call per decision,
- *     same as ai.read() uses.
+ *     same as ai.extract() uses.
  *   - 'jev' - TypeSafe's Jev model answers a typed Choice question ("which
  *     element") instead of generating JSON, which is faster and cheaper.
  *     Jev cannot generate free text at all, so a value that isn't literally
  *     quoted in the instruction (e.g. "type \"foo\" into...") or enumerable
  *     from the page (a <select>'s own options) still falls back to a single
- *     small LLM call - and ai.read() *always* uses the LLM, regardless of
+ *     small LLM call - and ai.extract() *always* uses the LLM, regardless of
  *     this setting, since it fundamentally requires generated text.
  *
- * `options.context` (default off) feeds a rolling log of past do()/agent()
+ * `options.context` (default off) feeds a rolling log of past act()/agent()
  * decisions - shared across every browserAI() call in this process, so it
  * survives across iterations, not just within one page - into every future
  * decision's prompt, purely to help it reason (e.g. disambiguate "the other
@@ -374,7 +375,7 @@ export function browserAI(page, options = {}) {
     return new Error(`${text}${hint}`);
   }
 
-  // Shared by ai.do() and ai.agent(): resolve an instruction/goal against
+  // Shared by ai.act() and ai.agent(): resolve an instruction/goal against
   // the current element snapshot into { id, action, value } (or, when
   // includeDone is set, { done: true, reason } once the goal is met).
   async function decideAction(instruction, elements, decideOpts = {}) {
@@ -397,7 +398,7 @@ export function browserAI(page, options = {}) {
     }
 
     return askLlm(
-      DO_SYSTEM_PROMPT,
+      ACT_SYSTEM_PROMPT,
       elementPrompt(instruction, elements) +
         priorContext +
         '\n\nRespond with ONLY: {"id": <element id>, ' +
@@ -517,17 +518,17 @@ export function browserAI(page, options = {}) {
     return getLlm().complete(VALUE_SYSTEM_PROMPT, instruction).trim();
   }
 
-  // Passing a {selector, action, value} object (e.g. from ai.find())
+  // Passing a {selector, action, value} object (e.g. from ai.observe())
   // instead of a string skips the decision step entirely.
   //
   // actionOpts.secrets lets an instruction reference a value by name
   // (`type {{password}} into the password field`) instead of containing
   // it literally: the LLM/Jev decision only ever sees the placeholder
   // token, and it's swapped for the real value right before the action
-  // actually runs. This is the only case do() needs a real secret at all
+  // actually runs. This is the only case act() needs a real secret at all
   // - a value quoted directly in the instruction still goes through the
   // decision step (and, for the LLM path, the prompt) as-is.
-  async function doAction(instruction, actionOpts = {}) {
+  async function act(instruction, actionOpts = {}) {
     const { secrets, variables, ...playwrightOpts } = actionOpts;
 
     if (instruction && typeof instruction === 'object') {
@@ -564,24 +565,24 @@ export function browserAI(page, options = {}) {
       action: decision.action,
       value: decision.value,
     };
+    await perform({ ...step, value: substitutePlaceholders(step.value, secrets) }, playwrightOpts);
     // Placeholder value only (if any) - never the secret-substituted one.
     if (contextEnabled) {
       recordContext({ instruction: resolvedInstruction, description: target.text, action: step.action });
     }
-    await perform({ ...step, value: substitutePlaceholders(step.value, secrets) }, playwrightOpts);
     return step;
   }
 
-  async function find(instruction, findOpts = {}) {
-    const resolvedInstruction = substitutePlaceholders(instruction, findOpts.variables);
+  async function observe(instruction, observeOpts = {}) {
+    const resolvedInstruction = substitutePlaceholders(instruction, observeOpts.variables);
     const elements = await snapshot();
-    if (decisionProvider === 'jev') return findWithJev(resolvedInstruction, elements);
-    return findWithLlm(resolvedInstruction, elements);
+    if (decisionProvider === 'jev') return observeWithJev(resolvedInstruction, elements);
+    return observeWithLlm(resolvedInstruction, elements);
   }
 
-  function findWithLlm(instruction, elements) {
+  function observeWithLlm(instruction, elements) {
     const matches = askLlm(
-      FIND_SYSTEM_PROMPT,
+      OBSERVE_SYSTEM_PROMPT,
       elementPrompt(instruction, elements) +
         '\n\nRespond with ONLY a JSON array: ' +
         '[{"id": <element id>, "action": "click"|"fill"|"check"|"uncheck"|"select"|"press", "value": <string, optional>}]. ' +
@@ -602,8 +603,8 @@ export function browserAI(page, options = {}) {
 
   // Every element gets its own Noul ("does this match?") question, all
   // evaluated in parallel in a single request - no generated text needed,
-  // so this is a full replacement for find(), not just a faster guess.
-  function findWithJev(instruction, elements) {
+  // so this is a full replacement for observe(), not just a faster guess.
+  function observeWithJev(instruction, elements) {
     const client = getJev();
     const questions = elements.reduce((acc, el) => {
       acc[String(el.id)] = {
@@ -615,7 +616,7 @@ export function browserAI(page, options = {}) {
     if (Object.keys(questions).length === 0) return [];
 
     const answers = client.evaluate(instruction, questions);
-    if (verbose) console.log(`[browser-ai:jev] find answers=${JSON.stringify(answers)}`);
+    if (verbose) console.log(`[browser-ai:jev] observe answers=${JSON.stringify(answers)}`);
     return elements
       .filter((el) => {
         const a = answers[String(el.id)];
@@ -632,11 +633,11 @@ export function browserAI(page, options = {}) {
 
   // Always uses the generative LLM, regardless of decisionProvider: Jev
   // only answers typed questions and never emits free text.
-  async function read(instruction, readOpts = {}) {
-    const resolvedInstruction = substitutePlaceholders(instruction, readOpts.variables);
+  async function extract(instruction, extractOpts = {}) {
+    const resolvedInstruction = substitutePlaceholders(instruction, extractOpts.variables);
     const text = await evaluateStable(collectVisibleText, 12000);
-    const schemaHint = readOpts.schema
-      ? `The result must match this JSON schema exactly:\n${JSON.stringify(readOpts.schema)}`
+    const schemaHint = extractOpts.schema
+      ? `The result must match this JSON schema exactly:\n${JSON.stringify(extractOpts.schema)}`
       : 'Return the most reasonable JSON representation of the requested data.';
 
     // document.body.innerText is unreliable for current form-control state
@@ -656,7 +657,7 @@ export function browserAI(page, options = {}) {
       }));
 
     return askLlm(
-      READ_SYSTEM_PROMPT,
+      EXTRACT_SYSTEM_PROMPT,
       `Instruction: ${resolvedInstruction}\n\n${schemaHint}\n\n` +
         'Current form control values (ground truth for what is currently ' +
         `selected/checked/filled in - prefer this over page text for that):\n${JSON.stringify(controls)}\n\n` +
@@ -669,7 +670,7 @@ export function browserAI(page, options = {}) {
   // for redirects/transitions whose timing isn't consistent (e.g. an app
   // that takes a variable amount of time to leave its login page) without
   // baking that one app's behavior into the wait itself. Throws on timeout.
-  async function waitUntil(condition, waitOpts = {}) {
+  async function wait(condition, waitOpts = {}) {
     const timeout = waitOpts.timeout || DEFAULT_WAIT_TIMEOUT_MS;
     const interval = waitOpts.interval || DEFAULT_WAIT_INTERVAL_MS;
     const resolvedCondition = substitutePlaceholders(condition, waitOpts.variables);
@@ -679,16 +680,16 @@ export function browserAI(page, options = {}) {
       const { met } = await checkCondition(resolvedCondition);
       if (met) return;
       if (Date.now() - start >= timeout) {
-        throw new Error(`browser-ai: waitUntil timed out after ${timeout}ms waiting for "${resolvedCondition}"`);
+        throw new Error(`browser-ai: wait() timed out after ${timeout}ms waiting for "${resolvedCondition}"`);
       }
       await new Promise((resolve) => setTimeout(resolve, interval));
     }
   }
 
-  // A single, non-polling judgment - unlike waitUntil(), never retried,
-  // since the point is to check *this* moment's state and fail loudly if
-  // it doesn't hold, not to wait for it to become true.
-  async function assertCondition(assertion, assertOpts = {}) {
+  // A single, non-polling judgment - unlike wait(), never retried, since
+  // the point is to check *this* moment's state and fail loudly if it
+  // doesn't hold, not to wait for it to become true.
+  async function assert(assertion, assertOpts = {}) {
     const resolvedAssertion = substitutePlaceholders(assertion, assertOpts.variables);
     const { met, reason } = await checkCondition(resolvedAssertion);
     if (met) return;
@@ -819,7 +820,7 @@ export function browserAI(page, options = {}) {
     return { done: false, reason: 'max steps reached', steps: history };
   }
 
-  const ai = { do: doAction, find, read, agent, waitUntil, assert: assertCondition };
+  const ai = { act, observe, extract, agent, wait, assert };
 
   return new Proxy(page, {
     get(target, prop, receiver) {
@@ -863,7 +864,7 @@ function splitAIOptions(options = {}) {
 //
 //   import { browser } from './src/browser-ai.js';
 //   const page = await browser.newPage({ decisionProvider: 'jev' });
-function wrapBrowserLike(target) {
+function wrapBrowserLike(target, contextAIOptions = {}) {
   return new Proxy(target, {
     get(obj, prop, receiver) {
       if (prop === 'newPage') {
@@ -871,11 +872,16 @@ function wrapBrowserLike(target) {
           const { aiOptions, nativeOptions } = splitAIOptions(options);
           const hasNative = Object.keys(nativeOptions).length > 0;
           const page = await (hasNative ? obj.newPage(nativeOptions) : obj.newPage());
-          return browserAI(page, aiOptions);
+          return browserAI(page, { ...contextAIOptions, ...aiOptions });
         };
       }
       if (prop === 'newContext') {
-        return async (...args) => wrapBrowserLike(await obj.newContext(...args));
+        return async (options) => {
+          const { aiOptions, nativeOptions } = splitAIOptions(options);
+          const hasNative = Object.keys(nativeOptions).length > 0;
+          const context = await (hasNative ? obj.newContext(nativeOptions) : obj.newContext());
+          return wrapBrowserLike(context, { ...contextAIOptions, ...aiOptions });
+        };
       }
       const value = Reflect.get(obj, prop, receiver);
       return typeof value === 'function' ? value.bind(obj) : value;
