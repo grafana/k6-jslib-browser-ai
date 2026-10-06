@@ -560,11 +560,11 @@ export function browserAI(page, options = {}) {
       action: decision.action,
       value: decision.value,
     };
+    await perform({ ...step, value: substitutePlaceholders(step.value, secrets) }, playwrightOpts);
     // Placeholder value only (if any) - never the secret-substituted one.
     if (contextEnabled) {
       recordContext({ instruction: resolvedInstruction, description: target.text, action: step.action });
     }
-    await perform({ ...step, value: substitutePlaceholders(step.value, secrets) }, playwrightOpts);
     return step;
   }
 
