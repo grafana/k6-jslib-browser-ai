@@ -470,7 +470,8 @@ export function browserAI(page, options = {}) {
         instructions:
           `Does ANY visible element on the page plausibly satisfy this instruction at all: ` +
           `"${instruction}"? Answer false if nothing on the page is remotely related to it, ` +
-          'rather than picking the closest-sounding guess.',
+          'rather than picking the closest-sounding guess. ' +
+          `Visible elements: ${JSON.stringify(elements.map(describeElement))}`,
       };
     }
 
