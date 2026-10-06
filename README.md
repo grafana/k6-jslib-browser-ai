@@ -52,6 +52,28 @@ Options: `llm`, `llmOptions`, `jev`, `jevOptions`, `maxElements`, `actionTimeout
 
 `llmOptions.fallbackModel` - Anthropic's safety classifier occasionally refuses a request. On a refusal, the library retries once with this model.
 
+## act() refuses rather than guesses
+
+`act()` throws instead of picking an element when nothing on the page plausibly matches the instruction 
+(e.g., calling `act('click send an email')` on a page with no email UI at all), instead of silently forcing a pick on
+whatever scores closest. The error includes why:
+
+```
+browser-ai: no element on the page satisfies "click send an email": no email-related UI on this page
+```
+
+For anything where picking the wrong element would be worse than a clear failure, 
+compose `observe()` (which can legitimately return `[]`) with `act(step)`(which skips the decision entirely when 
+given a resolved step) instead of handing the raw instruction straight to `act()`:
+
+```js
+const matches = await page.ai.observe('the "send email" button');
+if (matches.length === 0) {
+  throw new Error('no send-email button on this page');
+}
+await page.ai.act(matches[0]);
+```
+
 ## Using Jev to make decisions
 
 [TypeSafe's Jev](https://typesafe.ai/) is great at deciding "which element" is best: 
