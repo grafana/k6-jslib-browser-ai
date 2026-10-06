@@ -16,17 +16,17 @@ export default async function () {
 
     // {{user}}/{{password}} are placeholders - the LLM only ever sees these
     // tokens, never the real credentials from .env.
-    await page.ai.do('type {{user}} into the username field', { secrets: { user: readEnv('ADMIN_USER') } });
-    await page.ai.do('type {{password}} into the password field', { secrets: { password: readEnv('ADMIN_PASSWORD') } });
-    await page.ai.do('click the log in button');
+    await page.ai.act('type {{user}} into the username field', { secrets: { user: readEnv('ADMIN_USER') } });
+    await page.ai.act('type {{password}} into the password field', { secrets: { password: readEnv('ADMIN_PASSWORD') } });
+    await page.ai.act('click the log in button');
 
-    // A concrete fact (the URL) is a more reliable waitUntil condition
+    // A concrete fact (the URL) is a more reliable wait() condition
     // than a vague state ("logged in") - the page can be genuinely thin
     // on visible text for a moment right after the redirect.
-    await page.ai.waitUntil('the current page URL does not contain "/login"', { timeout: 20000 });
+    await page.ai.wait('the current page URL does not contain "/login"', { timeout: 20000 });
 
-    const result = await page.ai.read('what is the name of the organization shown in the top nav?');
-    console.log(`read(): ${JSON.stringify(result)}`);
+    const result = await page.ai.extract('what is the name of the organization shown in the top nav?');
+    console.log(`extract(): ${JSON.stringify(result)}`);
 
     ok = !page.url().includes('/login');
   } finally {
