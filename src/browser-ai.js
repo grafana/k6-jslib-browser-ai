@@ -36,11 +36,13 @@ const ACT_SYSTEM_PROMPT =
   'You control a web browser during a load test. You are given a natural ' +
   'language instruction and a JSON array of visible interactive elements. ' +
   'If exactly one element and action clearly satisfy the instruction, pick ' +
-  "them. If nothing visible plausibly satisfies it - it's about a different " +
-  'page, a different app, or simply is not there - say so instead of ' +
-  'guessing the closest-sounding element. Never force a pick just to ' +
-  'produce an answer. Reply with ONLY compact JSON, no prose, no markdown ' +
-  'fences.';
+  'them. If the instruction needs content revealed that is not in the ' +
+  'element list yet, respond with "scroll" (no element needed) instead. ' +
+  "If nothing visible plausibly satisfies it and scrolling would not help " +
+  "either - it's about a different page, a different app, or simply is " +
+  'not there - say so instead of guessing the closest-sounding element. ' +
+  'Never force a pick just to produce an answer. Reply with ONLY compact ' +
+  'JSON, no prose, no markdown fences.';
 
 const OBSERVE_SYSTEM_PROMPT =
   'You inspect a web page during a load test. You are given a natural ' +
@@ -58,9 +60,11 @@ const AGENT_SYSTEM_PROMPT =
   'and the currently visible elements. First decide whether the goal is ' +
   'already satisfied. If it is, respond with {"done": true, "reason": ' +
   '<string>}. Otherwise choose exactly one next action and respond with ' +
-  '{"done": false, "id": <element id>, "action": "click"|"fill"|"check"|' +
-  '"uncheck"|"select"|"press", "value": <string, optional>}. ' +
-  'Reply with ONLY compact JSON, no prose, no markdown fences.';
+  '{"done": false, "id": <element id, omit for "scroll">, "action": "click"|' +
+  '"fill"|"check"|"uncheck"|"select"|"press"|"scroll", "value": <string, ' +
+  'optional - for "scroll" use "down" or "up">}. Use "scroll" (no element ' +
+  'needed) when the goal needs content revealed that is not in the element ' +
+  'list yet. Reply with ONLY compact JSON, no prose, no markdown fences.';
 
 const VALUE_SYSTEM_PROMPT =
   'Extract or generate the single literal string value implied by a browser ' +
@@ -354,6 +358,25 @@ export function browserAI(page, options = {}) {
     return step;
   }
 
+  // Self-contained (no closures over outer scope) - same convention as
+  // reachabilityProbe/pageHtmlSnippet above.
+  function scrollByViewport(direction) {
+    window.scrollBy(0, direction === 'up' ? -window.innerHeight : window.innerHeight);
+  }
+
+  // "scroll" has no element target - by design, it exists to reveal
+  // content that isn't in the DOM yet (virtualized lists, infinite
+  // scroll), so there's nothing yet to target by id; anything already
+  // rendered-but-off-screen is reached for free by perform()'s own
+  // actionability checks. Reuses the same settle-poll perform() runs
+  // after fill/type, since a scroll can just as easily trigger an async
+  // lazy-load.
+  async function performScroll(step) {
+    await evaluateStable(scrollByViewport, step.value);
+    await waitForStableElementCount();
+    return step;
+  }
+
   // A target element that never becomes actionable - the actual symptom
   // here was a real Playwright timeout clicking a legitimate-looking
   // element, not an empty snapshot - has two known causes worth telling
@@ -404,10 +427,11 @@ export function browserAI(page, options = {}) {
       ACT_SYSTEM_PROMPT,
       elementPrompt(instruction, elements) +
         priorContext +
-        '\n\nRespond with ONLY: {"id": <element id>, ' +
-        '"action": "click"|"fill"|"check"|"uncheck"|"select"|"press", "value": <string, optional>} ' +
-        'if one element clearly matches, or {"id": null, "reason": <string explaining what is ' +
-        'missing>} if nothing on the page plausibly satisfies the instruction.'
+        '\n\nRespond with ONLY: {"id": <element id, omit for "scroll">, ' +
+        '"action": "click"|"fill"|"check"|"uncheck"|"select"|"press"|"scroll", ' +
+        '"value": <string, optional - for "scroll" use "down" or "up">} if one element clearly ' +
+        'matches or scrolling would help, or {"id": null, "reason": <string explaining what is ' +
+        'missing>} if nothing on the page plausibly satisfies the instruction even after scrolling.'
     );
   }
 
@@ -557,6 +581,7 @@ export function browserAI(page, options = {}) {
     const { secrets, variables, ...playwrightOpts } = actionOpts;
 
     if (instruction && typeof instruction === 'object') {
+      if (instruction.action === 'scroll') return performScroll(instruction);
       return perform(instruction, playwrightOpts);
     }
 
@@ -573,6 +598,15 @@ export function browserAI(page, options = {}) {
       );
     }
     const decision = await decideAction(resolvedInstruction, elements);
+
+    if (decision && decision.action === 'scroll') {
+      const scrollStep = { action: 'scroll', value: decision.value };
+      await performScroll(scrollStep);
+      if (contextEnabled) {
+        recordContext({ instruction: resolvedInstruction, description: `scrolled ${scrollStep.value}`, action: 'scroll' });
+      }
+      return scrollStep;
+    }
 
     if (!decision || decision.id === undefined || decision.id === null) {
       // decision.reason is present when the model explicitly declined
@@ -806,6 +840,23 @@ export function browserAI(page, options = {}) {
           `[browser-ai] agent() reported done ("${decision.reason}") but independent verification ` +
             'disagreed - continuing.'
         );
+        continue;
+      }
+
+      // Exempt from the stuck-check below: repeating the identical scroll
+      // decision several steps in a row is normal, deliberate progress
+      // (each call changes the page even though the step itself looks the
+      // same), not a loop - unlike re-deriving the same element-targeted
+      // action with no apparent effect.
+      if (decision && decision.action === 'scroll') {
+        const scrollStep = { action: 'scroll', value: decision.value };
+        await performScroll(scrollStep);
+        const record = { description: `scrolled ${scrollStep.value}`, ...scrollStep };
+        history.push(record);
+        if (contextEnabled) {
+          recordContext({ instruction: resolvedGoal, description: record.description, action: 'scroll' });
+        }
+        if (agentOpts.onStep) agentOpts.onStep(record, step);
         continue;
       }
       if (!decision || decision.id === undefined || decision.id === null) {
