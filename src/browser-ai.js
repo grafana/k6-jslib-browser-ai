@@ -624,7 +624,9 @@ export function browserAI(page, options = {}) {
     const resolvedInstruction = substitutePlaceholders(instruction, variables);
 
     const elements = await snapshot();
-    if (elements.length === 0) {
+    // The LLM path may still choose "scroll" from an empty list (the
+    // current viewport can hold no controls); Jev needs choices to pick from.
+    if (elements.length === 0 && decisionProvider === 'jev') {
       throw new Error(
         `browser-ai: no visible interactive elements found for "${resolvedInstruction}"${await botChallengeHint()}`
       );
@@ -646,7 +648,8 @@ export function browserAI(page, options = {}) {
       // malformed/empty - surface it when we have it, since it's the
       // single most useful signal for "why didn't this work".
       const reason = decision && decision.reason ? `: ${decision.reason}` : '';
-      throw new Error(`browser-ai: no element on the page satisfies "${resolvedInstruction}"${reason}`);
+      const hint = elements.length === 0 ? await botChallengeHint() : '';
+      throw new Error(`browser-ai: no element on the page satisfies "${resolvedInstruction}"${reason}${hint}`);
     }
     const target = elements[decision.id];
     if (!target) {
@@ -852,7 +855,7 @@ export function browserAI(page, options = {}) {
 
     for (let step = 0; step < maxSteps; step++) {
       const elements = await snapshot();
-      if (elements.length === 0) {
+      if (elements.length === 0 && decisionProvider === 'jev') {
         throw new Error(
           `browser-ai: no visible interactive elements found for goal "${resolvedGoal}"${await botChallengeHint()}`
         );
@@ -892,7 +895,8 @@ export function browserAI(page, options = {}) {
         continue;
       }
       if (!decision || decision.id === undefined || decision.id === null) {
-        throw new Error(`browser-ai: agent could not resolve a next step for goal "${resolvedGoal}"`);
+        const hint = elements.length === 0 ? await botChallengeHint() : '';
+        throw new Error(`browser-ai: agent could not resolve a next step for goal "${resolvedGoal}"${hint}`);
       }
 
       const target = elements[decision.id];
