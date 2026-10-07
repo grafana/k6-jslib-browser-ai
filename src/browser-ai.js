@@ -85,7 +85,8 @@ const VERIFY_DONE_SYSTEM_PROMPT =
   'been achieved, based only on the current page\'s visible text and URL - ' +
   'not on the acting model\'s own claim. Be skeptical: if the page doesn\'t ' +
   'clearly show the goal is met, say it is not. Reply with ONLY compact ' +
-  'JSON: {"met": true|false}, no prose, no markdown fences.';
+  'JSON: {"met": true|false, "reason": <string>}, no prose, no markdown ' +
+  'fences.';
 
 // Module-level (not per browserAI() call) so it's shared across every
 // act()/agent() decision in this process - a fresh page wrap on the next
@@ -386,15 +387,21 @@ export function browserAI(page, options = {}) {
     return decideWithLlm(instruction, elements, decideOpts);
   }
 
-  function decideWithLlm(instruction, elements, { includeDone, history } = {}) {
+  function decideWithLlm(instruction, elements, { includeDone, history, rejectedDoneReason } = {}) {
     const priorContext = contextNote();
     if (includeDone) {
+      const rejectionNote = rejectedDoneReason
+        ? `\n\nA moment ago the goal was reported done, but an independent check ` +
+          `disagreed: "${rejectedDoneReason}". Re-examine the current page before ` +
+          'concluding done again.'
+        : '';
       const decision = askLlm(
         AGENT_SYSTEM_PROMPT,
         `Goal: ${instruction}\n\n` +
           `Actions taken so far: ${JSON.stringify(history || [])}\n\n` +
           elementPrompt(instruction, elements) +
-          priorContext
+          priorContext +
+          rejectionNote
       );
       if (decision && decision.done) return { done: true, reason: decision.reason };
       return decision;
@@ -426,7 +433,7 @@ export function browserAI(page, options = {}) {
   // is resolved from the instruction text or the element's own options
   // where possible, only falling back to the LLM for genuinely generated
   // text (something Jev cannot produce at all).
-  function decideWithJev(instruction, elements, { includeDone, history } = {}) {
+  function decideWithJev(instruction, elements, { includeDone, history, rejectedDoneReason } = {}) {
     const client = getJev();
     const actedIds = (history || []).map((h) => h.id).filter((id) => id !== undefined);
 
@@ -451,11 +458,16 @@ export function browserAI(page, options = {}) {
       },
     };
     if (includeDone) {
+      const rejectionNote = rejectedDoneReason
+        ? ` Note: a previous "done" claim was rejected because: "${rejectedDoneReason}" - ` +
+          'only answer yes if this is no longer true.'
+        : '';
       questions.done = {
         type: 'noul',
         instructions:
           `Considering the actions already taken (see state) and the goal "${instruction}", ` +
-          'has the goal already been fully achieved, such that no further action is needed?',
+          'has the goal already been fully achieved, such that no further action is needed?' +
+          rejectionNote,
       };
     } else {
       // Only for a plain act() - not agent(), which already has its own
@@ -764,7 +776,7 @@ export function browserAI(page, options = {}) {
       `Goal: ${goal}\n\nActions already taken: ${JSON.stringify(history)}\n\n` +
         `Current URL: ${page.url()}\n\nCurrent visible page text:\n${text}`
     );
-    return !!(decision && decision.met);
+    return { met: !!(decision && decision.met), reason: decision && decision.reason };
   }
 
   function stepsEqual(a, b) {
@@ -783,6 +795,11 @@ export function browserAI(page, options = {}) {
     const secrets = agentOpts.secrets;
     const resolvedGoal = substitutePlaceholders(goal, agentOpts.variables);
     const history = [];
+    // Set only right after a rejected "done" claim, and only read by the
+    // very next decision call - see below for why a bare retry (same
+    // history, same unchanged elements) would otherwise just repeat the
+    // same wrong judgment forever.
+    let rejectedDoneReason;
 
     for (let step = 0; step < maxSteps; step++) {
       const elements = await snapshot();
@@ -791,23 +808,29 @@ export function browserAI(page, options = {}) {
           `browser-ai: no visible interactive elements found for goal "${resolvedGoal}"${await botChallengeHint()}`
         );
       }
-      const decision = await decideAction(resolvedGoal, elements, { includeDone: true, history });
+      const decision = await decideAction(resolvedGoal, elements, { includeDone: true, history, rejectedDoneReason });
 
       if (decision && decision.done) {
         const shouldVerify = agentOpts.verifyDone !== false;
-        if (!shouldVerify || (await verifyGoalMet(resolvedGoal, history))) {
+        const verification = shouldVerify ? await verifyGoalMet(resolvedGoal, history) : { met: true };
+        if (verification.met) {
           return { done: true, reason: decision.reason, steps: history };
         }
         // Self-reported "done" didn't hold up against the page's own
-        // text - don't trust it, and don't return early. Loop again: a
-        // fresh snapshot next iteration may lead the model to a different
-        // (correct) decision, still bounded by maxSteps either way.
+        // text - don't trust it, and don't return early. A bare retry
+        // would hand the next decision the exact same history and the
+        // exact same (unchanged) element snapshot, so it has nothing new
+        // to react to and tends to just repeat the same wrong judgment -
+        // carry the independent check's own reason forward instead, so
+        // the next attempt has something concrete to reconsider.
+        rejectedDoneReason = verification.reason;
         console.warn(
           `[browser-ai] agent() reported done ("${decision.reason}") but independent verification ` +
-            'disagreed - continuing.'
+            `disagreed${verification.reason ? ` ("${verification.reason}")` : ''} - continuing.`
         );
         continue;
       }
+      rejectedDoneReason = undefined;
       if (!decision || decision.id === undefined || decision.id === null) {
         throw new Error(`browser-ai: agent could not resolve a next step for goal "${resolvedGoal}"`);
       }
