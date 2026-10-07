@@ -28,7 +28,7 @@ export default async function () {
       });
       for (const q of quotes || []) seen.set(q.text, q);
       console.log(`collected so far: ${seen.size}`);
-      if (seen.size >= 20) break;
+      if (seen.size >= 20 || i === maxScrolls) break;
       await page.ai.act('scroll down to load more quotes');
     }
 
