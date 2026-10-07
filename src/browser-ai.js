@@ -404,9 +404,12 @@ export function browserAI(page, options = {}) {
     if (step.value !== 'up' && step.value !== 'down') {
       throw new Error(`browser-ai: scroll direction must be "up" or "down", got "${step.value}"`);
     }
+    const before = await evaluateStable(pageSignature);
     await evaluateStable(scrollByViewport, step.value);
-    await waitForStablePage();
-    return step;
+    const after = await waitForStablePage();
+    // moved is false at the top/bottom boundary or on a non-scrollable
+    // page - agent() uses it to tell progress from a no-op loop.
+    return { step, moved: before !== after };
   }
 
   // A target element that never becomes actionable - the actual symptom
@@ -613,7 +616,7 @@ export function browserAI(page, options = {}) {
     const { secrets, variables, ...playwrightOpts } = actionOpts;
 
     if (instruction && typeof instruction === 'object') {
-      if (instruction.action === 'scroll') return performScroll(instruction);
+      if (instruction.action === 'scroll') return (await performScroll(instruction)).step;
       return perform(instruction, playwrightOpts);
     }
 
@@ -878,15 +881,27 @@ export function browserAI(page, options = {}) {
         continue;
       }
 
-      // Exempt from the stuck-check below: repeating the identical scroll
-      // decision several steps in a row is normal, deliberate progress
-      // (each call changes the page even though the step itself looks the
-      // same), not a loop - unlike re-deriving the same element-targeted
-      // action with no apparent effect.
+      // Repeating the identical scroll is deliberate progress only while
+      // each one actually changes the page; scrolls that report no change
+      // (top/bottom boundary, non-scrollable page) count towards the same
+      // stuck-check as any other repeated action.
       if (decision && decision.action === 'scroll') {
         const scrollStep = { action: 'scroll', value: decision.value };
-        await performScroll(scrollStep);
+        const { moved } = await performScroll(scrollStep);
         const record = { description: `scrolled ${scrollStep.value}`, ...scrollStep };
+        if (!moved) record.noEffect = true;
+        const recentScrolls = history.slice(-(STUCK_REPEAT_THRESHOLD - 1));
+        if (
+          !moved &&
+          recentScrolls.length === STUCK_REPEAT_THRESHOLD - 1 &&
+          recentScrolls.every((h) => h.noEffect && stepsEqual(h, scrollStep))
+        ) {
+          throw new Error(
+            `browser-ai: agent() looks stuck - scrolled ${scrollStep.value} ${STUCK_REPEAT_THRESHOLD} times ` +
+              `in a row without the page changing for goal "${resolvedGoal}". Stopping rather than ` +
+              'exhausting maxSteps.'
+          );
+        }
         history.push(record);
         if (contextEnabled) {
           recordContext({ instruction: resolvedGoal, description: record.description, action: 'scroll' });
