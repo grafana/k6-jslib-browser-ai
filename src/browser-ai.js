@@ -35,8 +35,12 @@ const STUCK_REPEAT_THRESHOLD = 3;
 const ACT_SYSTEM_PROMPT =
   'You control a web browser during a load test. You are given a natural ' +
   'language instruction and a JSON array of visible interactive elements. ' +
-  'Pick exactly one element and one action that best satisfies the ' +
-  'instruction. Reply with ONLY compact JSON, no prose, no markdown fences.';
+  'If exactly one element and action clearly satisfy the instruction, pick ' +
+  "them. If nothing visible plausibly satisfies it - it's about a different " +
+  'page, a different app, or simply is not there - say so instead of ' +
+  'guessing the closest-sounding element. Never force a pick just to ' +
+  'produce an answer. Reply with ONLY compact JSON, no prose, no markdown ' +
+  'fences.';
 
 const OBSERVE_SYSTEM_PROMPT =
   'You inspect a web page during a load test. You are given a natural ' +
@@ -401,7 +405,9 @@ export function browserAI(page, options = {}) {
       elementPrompt(instruction, elements) +
         priorContext +
         '\n\nRespond with ONLY: {"id": <element id>, ' +
-        '"action": "click"|"fill"|"check"|"uncheck"|"select"|"press", "value": <string, optional>}'
+        '"action": "click"|"fill"|"check"|"uncheck"|"select"|"press", "value": <string, optional>} ' +
+        'if one element clearly matches, or {"id": null, "reason": <string explaining what is ' +
+        'missing>} if nothing on the page plausibly satisfies the instruction.'
     );
   }
 
@@ -451,6 +457,21 @@ export function browserAI(page, options = {}) {
           `Considering the actions already taken (see state) and the goal "${instruction}", ` +
           'has the goal already been fully achieved, such that no further action is needed?',
       };
+    } else {
+      // Only for a plain act() - not agent(), which already has its own
+      // done/stuck-loop handling for "nothing good to click yet". `target`
+      // above is a forced Choice with no abstain option, so without this
+      // a page with nothing related to the instruction still gets a
+      // confident-looking pick instead of an honest refusal - same
+      // problem observeWithJev's per-element threshold already avoids.
+      questions.plausible = {
+        type: 'noul',
+        instructions:
+          `Does ANY visible element on the page plausibly satisfy this instruction at all: ` +
+          `"${instruction}"? Answer false if nothing on the page is remotely related to it, ` +
+          'rather than picking the closest-sounding guess. ' +
+          `Visible elements: ${JSON.stringify(elements.map(describeElement))}`,
+      };
     }
 
     const state = { instruction, actions_already_taken: history || [] };
@@ -462,6 +483,13 @@ export function browserAI(page, options = {}) {
 
     if (includeDone && answers.done && answers.done.noul >= JEV_DONE_THRESHOLD) {
       return { done: true, reason: `jev: done-confidence ${answers.done.noul.toFixed(2)}` };
+    }
+
+    if (!includeDone && answers.plausible && answers.plausible.noul < JEV_MATCH_THRESHOLD) {
+      throw new Error(
+        `browser-ai: no element on the page satisfies "${instruction}" ` +
+          `(jev plausibility ${answers.plausible.noul.toFixed(2)})`
+      );
     }
 
     const targetId = Number(answers.target && answers.target.choice);
@@ -547,7 +575,12 @@ export function browserAI(page, options = {}) {
     const decision = await decideAction(resolvedInstruction, elements);
 
     if (!decision || decision.id === undefined || decision.id === null) {
-      throw new Error(`browser-ai: could not resolve an action for "${resolvedInstruction}"`);
+      // decision.reason is present when the model explicitly declined
+      // (see ACT_SYSTEM_PROMPT) rather than when the response was just
+      // malformed/empty - surface it when we have it, since it's the
+      // single most useful signal for "why didn't this work".
+      const reason = decision && decision.reason ? `: ${decision.reason}` : '';
+      throw new Error(`browser-ai: no element on the page satisfies "${resolvedInstruction}"${reason}`);
     }
     const target = elements[decision.id];
     if (!target) {
