@@ -35,7 +35,7 @@ export default async function () {
     const firstTwenty = [...seen.values()].slice(0, 20);
     console.log(JSON.stringify(firstTwenty, null, 2));
 
-    ok = true;
+    ok = seen.size >= 20;
   } finally {
     check(null, { 'scroll walkthrough completed': () => ok });
     await page.close();
