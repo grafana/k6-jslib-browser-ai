@@ -37,7 +37,7 @@ const ACT_SYSTEM_PROMPT =
   'language instruction and a JSON array of visible interactive elements. ' +
   'If exactly one element and action clearly satisfy the instruction, pick ' +
   'them. If the instruction needs content revealed that is not in the ' +
-  'element list yet, respond with "scroll" (no element needed) instead. ' +
+  'element list yet, choose the "scroll" action (no element needed) instead. ' +
   "If nothing visible plausibly satisfies it and scrolling would not help " +
   "either - it's about a different page, a different app, or simply is " +
   'not there - say so instead of guessing the closest-sounding element. ' +
