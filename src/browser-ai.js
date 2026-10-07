@@ -372,6 +372,9 @@ export function browserAI(page, options = {}) {
   // after fill/type, since a scroll can just as easily trigger an async
   // lazy-load.
   async function performScroll(step) {
+    if (step.value !== 'up' && step.value !== 'down') {
+      throw new Error(`browser-ai: scroll direction must be "up" or "down", got "${step.value}"`);
+    }
     await evaluateStable(scrollByViewport, step.value);
     await waitForStableElementCount();
     return step;
