@@ -703,14 +703,32 @@ export function browserAI(page, options = {}) {
     let rejectedDoneReason;
 
     for (let step = 0; step < maxSteps; step++) {
-      const elements = await snapshot();
+      // Text first, then elements: if a render lands between the two reads,
+      // the stale-decision check below sees it (the text read before the
+      // action differs) instead of passing on a mismatched pair.
       const pageText = await evaluateStable(collectVisibleText, 4000);
+      const elements = await snapshot();
       const decision = await decideAction(resolvedGoal, elements, {
         includeDone: true,
         history,
         pageText,
         rejectedDoneReason,
       });
+
+      // The decision call can take seconds, during which an earlier action's
+      // result may have landed - then this decision (an action, or a "done"
+      // that verifyDone: false would return unchecked) was made against a
+      // page that's no longer there. Discard it and decide again from a
+      // fresh snapshot. A discarded decision isn't an agent step, so it
+      // doesn't count toward maxSteps; MAX_STALE_REDECIDES bounds how many in
+      // a row.
+      const beforeText = await evaluateStable(collectVisibleText, 4000);
+      if (beforeText !== pageText && staleRedecides < MAX_STALE_REDECIDES) {
+        staleRedecides++;
+        step--;
+        continue;
+      }
+      staleRedecides = 0;
 
       if (decision && decision.done) {
         const shouldVerify = agentOpts.verifyDone !== false;
@@ -736,20 +754,6 @@ export function browserAI(page, options = {}) {
         continue;
       }
 
-      // The decision call can take seconds, during which an earlier action's
-      // result may have landed - then this action (a click, a scroll, ...)
-      // was chosen against a page that's no longer there (e.g. it could
-      // overwrite a now-satisfied goal). Discard it and decide again from a
-      // fresh snapshot. A discarded
-      // decision isn't an agent step, so it doesn't count toward maxSteps;
-      // MAX_STALE_REDECIDES bounds how many in a row.
-      const beforeText = await evaluateStable(collectVisibleText, 4000);
-      if (beforeText !== pageText && staleRedecides < MAX_STALE_REDECIDES) {
-        staleRedecides++;
-        step--;
-        continue;
-      }
-      staleRedecides = 0;
       // Only the decision right after a rejection gets the note - and a
       // decision discarded as stale above doesn't count, so its redo keeps it.
       rejectedDoneReason = undefined;
