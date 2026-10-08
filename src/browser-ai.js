@@ -1,20 +1,11 @@
 import { browser as k6Browser } from 'k6/browser';
 import { createLLMClient } from './llm.js';
-import { createJevClient } from './jev.js';
 import { collectInteractiveElements, collectVisibleText } from './dom.js';
 
 const DEFAULT_MAX_ELEMENTS = 150;
 const DEFAULT_MAX_AGENT_STEPS = 10;
 const DEFAULT_ACTION_TIMEOUT_MS = 8000;
 const FORCEABLE_ACTIONS = ['click', 'check', 'uncheck', 'fill', 'type'];
-// 0.5 is a coin flip, not a "yes" - elements with an uninformative
-// description (no visible text) tend to cluster around 0.4-0.5 noise
-// rather than 0, so the real threshold needs to sit clearly above that
-// band. Verified against news.ycombinator.com: the correct "More" link
-// scored 0.85 while unrelated upvote-arrow links clustered at 0.4-0.5.
-const JEV_MATCH_THRESHOLD = 0.65;
-const JEV_DONE_THRESHOLD = 0.8;
-const WAIT_MET_THRESHOLD = 0.65;
 const DEFAULT_WAIT_TIMEOUT_MS = 10000;
 const DEFAULT_WAIT_INTERVAL_MS = 500;
 // Typing into a search box often triggers an async autocomplete update
@@ -66,11 +57,6 @@ const AGENT_SYSTEM_PROMPT =
   'needed) when the goal needs content revealed that is not in the element ' +
   'list yet. Reply with ONLY compact JSON, no prose, no markdown fences.';
 
-const VALUE_SYSTEM_PROMPT =
-  'Extract or generate the single literal string value implied by a browser ' +
-  'automation instruction (e.g. what to type into a field). Reply with ONLY ' +
-  'that string - no quotes, no prose, no markdown fences.';
-
 // Shared by wait() (polls this) and assert() (checks it once) - both
 // ultimately ask the same question, "is this condition currently true on
 // the page?". The reason is unused by wait() but gives assert() a
@@ -107,24 +93,11 @@ function recordContext(entry) {
 
 /**
  * Wraps a k6 browser `page` with a small `.ai` namespace (act / observe /
- * extract / agent / wait / assert) backed by an LLM (or, optionally,
- * TypeSafe's Jev - see below), while every native page method (goto,
- * locator, evaluate, screenshot, close, ...) keeps working untouched. The
- * design is built around k6's async browser module and load-testing
- * constraints specifically: cost and latency per VU per iteration, and no
- * npm dependencies.
- *
- * `options.decisionProvider` picks how "which element / which action"
- * decisions get made:
- *   - 'llm' (default) - a single generative Anthropic call per decision,
- *     same as ai.extract() uses.
- *   - 'jev' - TypeSafe's Jev model answers a typed Choice question ("which
- *     element") instead of generating JSON, which is faster and cheaper.
- *     Jev cannot generate free text at all, so a value that isn't literally
- *     quoted in the instruction (e.g. "type \"foo\" into...") or enumerable
- *     from the page (a <select>'s own options) still falls back to a single
- *     small LLM call - and ai.extract() *always* uses the LLM, regardless of
- *     this setting, since it fundamentally requires generated text.
+ * extract / agent / wait / assert) backed by an LLM, while every native
+ * page method (goto, locator, evaluate, screenshot, close, ...) keeps
+ * working untouched. The design is built around k6's async browser module
+ * and load-testing constraints specifically: cost and latency per VU per
+ * iteration, and no npm dependencies.
  *
  * `options.context` (default off) feeds a rolling log of past act()/agent()
  * decisions - shared across every browserAI() call in this process, so it
@@ -134,8 +107,6 @@ function recordContext(entry) {
  */
 export function browserAI(page, options = {}) {
   let llm = options.llm || null;
-  let jev = options.jev || null;
-  const decisionProvider = options.decisionProvider || 'llm';
   const maxElements = options.maxElements || DEFAULT_MAX_ELEMENTS;
   const actionTimeout = options.actionTimeout || DEFAULT_ACTION_TIMEOUT_MS;
   const contextEnabled = !!options.context;
@@ -143,11 +114,6 @@ export function browserAI(page, options = {}) {
   function getLlm() {
     if (!llm) llm = createLLMClient(options.llmOptions || {});
     return llm;
-  }
-
-  function getJev() {
-    if (!jev) jev = createJevClient(options.jevOptions || {});
-    return jev;
   }
 
   // A click/fill that triggers navigation can tear down the page's JS
@@ -232,8 +198,7 @@ export function browserAI(page, options = {}) {
     // An empty snapshot right after navigation usually means the page
     // fired 'networkidle' before client-side hydration actually added its
     // interactive elements, not that the page truly has none - retry once
-    // rather than let callers (e.g. a Jev Choice question with zero
-    // options) fail on a confusing downstream error.
+    // rather than let callers fail on a confusing downstream error.
     if (elements.length > 0) return elements;
     await new Promise((resolve) => setTimeout(resolve, 300));
     ({ elements, truncated } = await evaluateStable(collectInteractiveElements, maxElements));
@@ -439,12 +404,7 @@ export function browserAI(page, options = {}) {
   // Shared by ai.act() and ai.agent(): resolve an instruction/goal against
   // the current element snapshot into { id, action, value } (or, when
   // includeDone is set, { done: true, reason } once the goal is met).
-  async function decideAction(instruction, elements, decideOpts = {}) {
-    if (decisionProvider === 'jev') return decideWithJev(instruction, elements, decideOpts);
-    return decideWithLlm(instruction, elements, decideOpts);
-  }
-
-  function decideWithLlm(instruction, elements, { includeDone, history } = {}) {
+  function decideAction(instruction, elements, { includeDone, history } = {}) {
     const priorContext = contextNote();
     if (includeDone) {
       const decision = askLlm(
@@ -479,139 +439,16 @@ export function browserAI(page, options = {}) {
     );
   }
 
-  // Jev answers a typed Choice question ("which element") instead of
-  // generating JSON - see jev.js. Action *type* comes from the element's
-  // own tag/attributes (deterministic, no inference needed), and a value
-  // is resolved from the instruction text or the element's own options
-  // where possible, only falling back to the LLM for genuinely generated
-  // text (something Jev cannot produce at all).
-  function decideWithJev(instruction, elements, { includeDone, history } = {}) {
-    const client = getJev();
-    const actedIds = (history || []).map((h) => h.id).filter((id) => id !== undefined);
-
-    const questions = {
-      target: {
-        type: 'choice',
-        instructions:
-          `Which visible element does this instruction/goal refer to: "${instruction}"? ` +
-          'The state includes any actions already taken - if the goal still needs more ' +
-          'than one element acted on (e.g. "both checkboxes"), prefer an element not yet ' +
-          'acted on over repeating an already-completed action.',
-        criteria: elements.reduce((acc, el) => {
-          acc[String(el.id)] = describeElement(el);
-          return acc;
-        }, {}),
-      },
-      checkbox_intent: {
-        type: 'noul',
-        instructions:
-          'Only relevant if the target element is a checkbox: based on the instruction, ' +
-          'should it end up checked (true) rather than unchecked (false)?',
-      },
-    };
-    if (includeDone) {
-      questions.done = {
-        type: 'noul',
-        instructions:
-          `Considering the actions already taken (see state) and the goal "${instruction}", ` +
-          'has the goal already been fully achieved, such that no further action is needed?',
-      };
-    } else {
-      // Only for a plain act() - not agent(), which already has its own
-      // done/stuck-loop handling for "nothing good to click yet". `target`
-      // above is a forced Choice with no abstain option, so without this
-      // a page with nothing related to the instruction still gets a
-      // confident-looking pick instead of an honest refusal - same
-      // problem observeWithJev's per-element threshold already avoids.
-      questions.plausible = {
-        type: 'noul',
-        instructions:
-          `Does ANY visible element on the page plausibly satisfy this instruction at all: ` +
-          `"${instruction}"? Answer false if nothing on the page is remotely related to it, ` +
-          'rather than picking the closest-sounding guess. ' +
-          `Visible elements: ${JSON.stringify(elements.map(describeElement))}`,
-      };
-    }
-
-    const state = { instruction, actions_already_taken: history || [] };
-    if (contextEnabled && sharedContext.length > 0) {
-      state.actions_taken_earlier_in_this_run = sharedContext;
-    }
-    const answers = client.evaluate(state, questions);
-    console.debug(`[browser-ai:jev] state=${JSON.stringify(state)} answers=${JSON.stringify(answers)}`);
-
-    if (includeDone && answers.done && answers.done.noul >= JEV_DONE_THRESHOLD) {
-      return { done: true, reason: `jev: done-confidence ${answers.done.noul.toFixed(2)}` };
-    }
-
-    if (!includeDone && answers.plausible && answers.plausible.noul < JEV_MATCH_THRESHOLD) {
-      throw new Error(
-        `browser-ai: no element on the page satisfies "${instruction}" ` +
-          `(jev plausibility ${answers.plausible.noul.toFixed(2)})`
-      );
-    }
-
-    const targetId = Number(answers.target && answers.target.choice);
-    const target = elements[targetId];
-    if (!target) {
-      throw new Error(`browser-ai: (jev) could not resolve an element for "${instruction}"`);
-    }
-
-    let action = defaultActionForTag(target);
-    let value;
-
-    if (action === 'check') {
-      action = answers.checkbox_intent && answers.checkbox_intent.noul >= 0.5 ? 'check' : 'uncheck';
-    } else if (action === 'fill') {
-      value = extractQuotedValue(instruction);
-      if (value === undefined) value = generateValue(instruction);
-    } else if (action === 'select') {
-      value = resolveSelectValue(client, instruction, target);
-    }
-
-    return { id: targetId, action, value };
-  }
-
-  function resolveSelectValue(client, instruction, target) {
-    const literal = extractQuotedValue(instruction);
-    if (literal !== undefined) return literal;
-    if (!Array.isArray(target.options) || target.options.length === 0) {
-      return generateValue(instruction);
-    }
-
-    // A second, small Jev call: which of the <select>'s *actual* options
-    // matches, rather than asking a generative model to invent a value.
-    const answers = client.evaluate(instruction, {
-      option: {
-        type: 'choice',
-        instructions: `Which option should be selected to satisfy: "${instruction}"?`,
-        criteria: target.options.reduce((acc, label, idx) => {
-          acc[String(idx)] = label;
-          return acc;
-        }, {}),
-      },
-    });
-    const idx = Number(answers.option && answers.option.choice);
-    return target.options[idx];
-  }
-
-  // The one place decisionProvider:'jev' still needs a real generative
-  // call: a fill value that isn't quoted in the instruction and can't be
-  // enumerated from the page. Kept to a single short completion.
-  function generateValue(instruction) {
-    return getLlm().complete(VALUE_SYSTEM_PROMPT, instruction).trim();
-  }
-
   // Passing a {selector, action, value} object (e.g. from ai.observe())
   // instead of a string skips the decision step entirely.
   //
   // actionOpts.secrets lets an instruction reference a value by name
   // (`type {{password}} into the password field`) instead of containing
-  // it literally: the LLM/Jev decision only ever sees the placeholder
-  // token, and it's swapped for the real value right before the action
-  // actually runs. This is the only case act() needs a real secret at all
-  // - a value quoted directly in the instruction still goes through the
-  // decision step (and, for the LLM path, the prompt) as-is.
+  // it literally: the LLM decision only ever sees the placeholder token,
+  // and it's swapped for the real value right before the action actually
+  // runs. This is the only case act() needs a real secret at all - a
+  // value quoted directly in the instruction still goes through the
+  // decision step (and its prompt) as-is.
   async function act(instruction, actionOpts = {}) {
     const { secrets, variables, ...playwrightOpts } = actionOpts;
 
@@ -621,7 +458,7 @@ export function browserAI(page, options = {}) {
     }
 
     // variables are resolved into the instruction text up front, so the
-    // LLM/Jev decision sees the real value - unlike secrets, which stay as
+    // LLM decision sees the real value - unlike secrets, which stay as
     // a placeholder through the decision and are only filled into the
     // final value. Use variables for anything that isn't sensitive.
     const resolvedInstruction = substitutePlaceholders(instruction, variables);
@@ -678,14 +515,9 @@ export function browserAI(page, options = {}) {
   async function observe(instruction, observeOpts = {}) {
     const resolvedInstruction = substitutePlaceholders(instruction, observeOpts.variables);
     const elements = await snapshot();
-    if (decisionProvider === 'jev') return observeWithJev(resolvedInstruction, elements);
-    return observeWithLlm(resolvedInstruction, elements);
-  }
-
-  function observeWithLlm(instruction, elements) {
     const matches = askLlm(
       OBSERVE_SYSTEM_PROMPT,
-      elementPrompt(instruction, elements) +
+      elementPrompt(resolvedInstruction, elements) +
         '\n\nRespond with ONLY a JSON array: ' +
         '[{"id": <element id>, "action": "click"|"fill"|"check"|"uncheck"|"select"|"press", "value": <string, optional>}]. ' +
         'Return [] if nothing matches.'
@@ -703,38 +535,6 @@ export function browserAI(page, options = {}) {
       }));
   }
 
-  // Every element gets its own Noul ("does this match?") question, all
-  // evaluated in parallel in a single request - no generated text needed,
-  // so this is a full replacement for observe(), not just a faster guess.
-  function observeWithJev(instruction, elements) {
-    const client = getJev();
-    const questions = elements.reduce((acc, el) => {
-      acc[String(el.id)] = {
-        type: 'noul',
-        instructions: `Does this element satisfy "${instruction}"? Element: ${describeElement(el)}`,
-      };
-      return acc;
-    }, {});
-    if (Object.keys(questions).length === 0) return [];
-
-    const answers = client.evaluate(instruction, questions);
-    console.debug(`[browser-ai:jev] observe answers=${JSON.stringify(answers)}`);
-    return elements
-      .filter((el) => {
-        const a = answers[String(el.id)];
-        return a && a.noul >= JEV_MATCH_THRESHOLD;
-      })
-      .map((el) => ({
-        selector: el.selector,
-        frameSelector: el.frameSelector,
-        description: el.text,
-        action: defaultActionForTag(el),
-        value: undefined,
-      }));
-  }
-
-  // Always uses the generative LLM, regardless of decisionProvider: Jev
-  // only answers typed questions and never emits free text.
   async function extract(instruction, extractOpts = {}) {
     const resolvedInstruction = substitutePlaceholders(instruction, extractOpts.variables);
     const text = await evaluateStable(collectVisibleText, 12000);
@@ -800,7 +600,7 @@ export function browserAI(page, options = {}) {
     );
   }
 
-  async function checkConditionWithLlm(condition) {
+  async function checkCondition(condition) {
     const text = await evaluateStable(collectVisibleText, 4000);
     const decision = askLlm(
       CONDITION_SYSTEM_PROMPT,
@@ -809,26 +609,11 @@ export function browserAI(page, options = {}) {
     return { met: !!(decision && decision.met), reason: decision && decision.reason };
   }
 
-  async function checkConditionWithJev(condition) {
-    const client = getJev();
-    const text = await evaluateStable(collectVisibleText, 4000);
-    const answers = client.evaluate(
-      { condition, url: page.url(), page_text: text },
-      { met: { type: 'noul', instructions: `Is the following currently true about the page: ${condition}` } }
-    );
-    return { met: !!(answers.met && answers.met.noul >= WAIT_MET_THRESHOLD) };
-  }
-
-  async function checkCondition(condition) {
-    return decisionProvider === 'jev' ? checkConditionWithJev(condition) : checkConditionWithLlm(condition);
-  }
-
   // Independently audits a self-reported agent() "done" against the
   // page's own visible text, rather than trusting the same decision call
   // that produced it - a genuinely different signal (plain text vs. the
   // element-list-grounded decision), not just asking the same question
-  // twice. Always the LLM path regardless of decisionProvider: the point
-  // is a second, differently-grounded check, not a cheaper one.
+  // twice.
   async function verifyGoalMet(goal, history) {
     const text = await evaluateStable(collectVisibleText, 4000);
     const decision = askLlm(
@@ -963,18 +748,9 @@ export function browserAI(page, options = {}) {
 }
 
 // browser.newPage() accepts k6's own page options (viewport, ...) and
-// this library's (llm, decisionProvider, ...) in the same object - split
-// them apart here rather than asking for two separate arguments.
-const AI_OPTION_KEYS = [
-  'llm',
-  'llmOptions',
-  'jev',
-  'jevOptions',
-  'maxElements',
-  'actionTimeout',
-  'decisionProvider',
-  'context',
-];
+// this library's (llm, maxElements, ...) in the same object - split them
+// apart here rather than asking for two separate arguments.
+const AI_OPTION_KEYS = ['llm', 'llmOptions', 'maxElements', 'actionTimeout', 'context'];
 
 function splitAIOptions(options = {}) {
   const aiOptions = {};
@@ -992,7 +768,7 @@ function splitAIOptions(options = {}) {
 // API to learn:
 //
 //   import { browser } from './src/browser-ai.js';
-//   const page = await browser.newPage({ decisionProvider: 'jev' });
+//   const page = await browser.newPage();
 function wrapBrowserLike(target, contextAIOptions = {}) {
   return new Proxy(target, {
     get(obj, prop, receiver) {
@@ -1020,35 +796,8 @@ function wrapBrowserLike(target, contextAIOptions = {}) {
 
 export const browser = wrapBrowserLike(k6Browser);
 
-function describeElement(el) {
-  const parts = [el.tag];
-  if (el.type) parts.push(`type=${el.type}`);
-  if (el.role) parts.push(`role=${el.role}`);
-  if (el.text) parts.push(`text="${el.text}"`);
-  if (typeof el.checked === 'boolean') parts.push(`checked=${el.checked}`);
-  if (Array.isArray(el.options)) parts.push(`options=[${el.options.join(', ')}]`);
-  if (el.frameSelector) parts.push('(inside an embedded frame)');
-  return parts.join(' ');
-}
-
-function defaultActionForTag(el) {
-  if (el.tag === 'select') return 'select';
-  if (el.tag === 'input') {
-    if (el.type === 'checkbox') return 'check';
-    return el.type === 'radio' || el.type === 'submit' || el.type === 'button' ? 'click' : 'fill';
-  }
-  if (el.tag === 'textarea') return 'fill';
-  return 'click'; // a, button, summary, [role], [onclick]
-}
-
-function extractQuotedValue(instruction) {
-  const match = instruction.match(/"([^"]*)"|'([^']*)'/);
-  if (!match) return undefined;
-  return match[1] !== undefined ? match[1] : match[2];
-}
-
 // Shared by secrets (substituted into the *value* after the decision, so
-// the real value never reaches the LLM/Jev) and variables (substituted
+// the real value never reaches the LLM) and variables (substituted
 // into the *instruction* before the decision, so the model does see the
 // real value - for non-sensitive, dynamic instruction text).
 function substitutePlaceholders(text, map) {
@@ -1080,4 +829,3 @@ function parseJSON(raw) {
 }
 
 export { createLLMClient } from './llm.js';
-export { createJevClient } from './jev.js';

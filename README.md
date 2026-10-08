@@ -46,11 +46,11 @@ ANTHROPIC_TOKEN=your_token k6 run examples/basic.test.js
 
 `{{name}}` pulls from `secrets` (hidden from the LLM) or `variables` (visible to it).
 
-Options: `llm`, `llmOptions`, `jev`, `jevOptions`, `maxElements`, `actionTimeout`, `decisionProvider`, `context`.
+Options: `llm`, `llmOptions`, `maxElements`, `actionTimeout`, `context`.
 
 `context: true` feeds a rolling log of past `act()`/`agent()` decisions into every future decision, to help it reason (e.g. "the other checkbox") - never to skip a call.
 
-Diagnostic logging (the LLM prompt/raw response, Jev state/answers) goes through `console.debug()`, so it's silent by default - run `k6 run --verbose your_script.js` (or `--log-level debug`) to see it, same as any other k6 module.
+Diagnostic logging (the LLM prompt/raw response) goes through `console.debug()`, so it's silent by default - run `k6 run --verbose your_script.js` (or `--log-level debug`) to see it, same as any other k6 module.
 
 `llmOptions.fallbackModel` - Anthropic's safety classifier occasionally refuses a request. On a refusal, the library retries once with this model.
 
@@ -74,17 +74,6 @@ if (matches.length === 0) {
   throw new Error('no send-email button on this page');
 }
 await page.ai.act(matches[0]);
-```
-
-## Using Jev to make decisions
-
-[TypeSafe's Jev](https://typesafe.ai/) is great at deciding "which element" is best: 
-- When `observe()` becomes one yes/no question per element.
-- When `act()`'s target becomes a choice question. 
-
-To enable it, you can pass `TYPESAFE_API_TOKEN` and enable it in your script:
-```js
-const page = await browser.newPage({ decisionProvider: 'jev' });
 ```
 
 ## Caveats
