@@ -711,6 +711,20 @@ export function browserAI(page, options = {}) {
         continue;
       }
 
+      // The decision call can take seconds, during which an earlier action's
+      // result may have landed - then this action (a click, a scroll, ...) was chosen against a page
+      // that's no longer there (e.g. it could overwrite a now-satisfied goal).
+      // Discard it and decide again from a fresh snapshot. A discarded
+      // decision isn't an agent step, so it doesn't count toward maxSteps;
+      // MAX_STALE_REDECIDES bounds how many in a row.
+      const beforeText = await evaluateStable(collectVisibleText, 4000);
+      if (beforeText !== pageText && staleRedecides < MAX_STALE_REDECIDES) {
+        staleRedecides++;
+        step--;
+        continue;
+      }
+      staleRedecides = 0;
+
       // Repeating the identical scroll is deliberate progress only while
       // each one actually changes the page; scrolls that report no change
       // (top/bottom boundary, non-scrollable page) count towards the same
@@ -718,6 +732,10 @@ export function browserAI(page, options = {}) {
       if (decision && decision.action === 'scroll') {
         const scrollStep = { action: 'scroll', value: decision.value };
         const { moved } = await performScroll(scrollStep);
+        // Scrolling can reveal lazily-loaded text; give it time to land, like
+        // after any other action. A no-op scroll (page boundary) changes
+        // nothing, so there's nothing to wait for.
+        if (moved) await waitForSettled(beforeText);
         const record = { description: `scrolled ${scrollStep.value}`, ...scrollStep };
         if (!moved) record.noEffect = true;
         const recentScrolls = history.slice(-(STUCK_REPEAT_THRESHOLD - 1));
@@ -749,20 +767,6 @@ export function browserAI(page, options = {}) {
       if (!target) {
         throw new Error(`browser-ai: agent referenced an unknown element for goal "${resolvedGoal}"`);
       }
-
-      // The decision call can take seconds, during which an earlier action's
-      // result may have landed - then this action was chosen against a page
-      // that's no longer there (e.g. it could overwrite a now-satisfied goal).
-      // Discard it and decide again from a fresh snapshot. A discarded
-      // decision isn't an agent step, so it doesn't count toward maxSteps;
-      // MAX_STALE_REDECIDES bounds how many in a row.
-      const beforeText = await evaluateStable(collectVisibleText, 4000);
-      if (beforeText !== pageText && staleRedecides < MAX_STALE_REDECIDES) {
-        staleRedecides++;
-        step--;
-        continue;
-      }
-      staleRedecides = 0;
 
       // record keeps the placeholder value (if any) - it feeds into the
       // *next* iteration's prompt as "actions already taken", so a real
