@@ -304,6 +304,27 @@ function collectVisibleText(maxChars) {
     return rect.height <= view.innerHeight * 1.5 && rect.width <= view.innerWidth * 1.5;
   }
 
+  // The text of `el` whose rendered boxes intersect `clip` - for a leaf that
+  // crosses the edge of a partly visible frame, where its whole innerText
+  // would include lines that are scrolled or clipped out of sight. Measured
+  // word by word via Range rects; only used on that rare path.
+  function clippedText(el, clip) {
+    const doc = el.ownerDocument;
+    const walker = doc.createTreeWalker(el, 4 /* NodeFilter.SHOW_TEXT */);
+    let out = '';
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const wordPattern = /\S+\s*/g;
+      let match;
+      while ((match = wordPattern.exec(node.nodeValue))) {
+        const range = doc.createRange();
+        range.setStart(node, match.index);
+        range.setEnd(node, match.index + match[0].trimEnd().length);
+        if (inViewportRect(range.getBoundingClientRect(), clip)) out += match[0];
+      }
+    }
+    return out.replace(/\s+/g, ' ').trim();
+  }
+
   function isRendered(el) {
     const style = el.ownerDocument.defaultView.getComputedStyle(el);
     return style.display !== 'none' && style.visibility !== 'hidden';
@@ -328,6 +349,10 @@ function collectVisibleText(maxChars) {
     const hasBox = rect.width > 0 || rect.height > 0;
     if (hasBox) {
       if (!inViewportRect(rect, clip)) return [];
+      if (clip.partial && el.children.length === 0 && !insideClip(rect, clip)) {
+        const text = clippedText(el, clip);
+        return text ? [text] : [];
+      }
       // For a partly clipped frame an element that sticks out of the visible
       // part can't be taken wholesale (its innerText includes the clipped-off
       // text) - recurse so its children get pruned individually.
