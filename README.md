@@ -67,8 +67,10 @@ Variables, for anything safe to show the model:
 await page.ai.act('search for {{query}}', { variables: { query: 'load testing tools' } });
 ```
 
-Secrets, for anything that shouldn't reach the LLM at all - this option just takes an already-resolved string,
-however you got it, so it works directly with [`k6/secrets`](https://grafana.com/docs/k6/latest/javascript-api/k6-secrets/)
+`secrets` delays substitution until the browser action, but does not redact later page snapshots:
+non-password field values or visible text containing a secret can still be sent to the LLM (password fields are masked).
+This option takes an already-resolved string, however you got it, so it works directly with
+[`k6/secrets`](https://grafana.com/docs/k6/latest/javascript-api/k6-secrets/)
 (or `__ENV`, a `.env` file, anything else):
 
 ```js
