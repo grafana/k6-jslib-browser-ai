@@ -31,6 +31,11 @@ const STUCK_REPEAT_THRESHOLD = 3;
 const TEXT_SETTLE_POLL_MS = 200;
 const TEXT_SETTLE_STABLE_READS = 2;
 const TEXT_SETTLE_MAX_WAIT_MS = 1000;
+// If the page's text changed while the LLM was deciding (an earlier action's
+// result landing late), the chosen action was decided against a stale page.
+// Re-decide that many times in a row before acting anyway, so a page whose
+// text never stops changing (a clock, a ticker) still makes progress.
+const MAX_STALE_REDECIDES = 1;
 
 const ACT_SYSTEM_PROMPT =
   'You control a web browser during a load test. You are given a natural ' +
@@ -683,6 +688,7 @@ export function browserAI(page, options = {}) {
     const history = [];
     // Visible text each step was decided against, parallel to history.
     const pageTexts = [];
+    let staleRedecides = 0;
 
     for (let step = 0; step < maxSteps; step++) {
       const elements = await snapshot();
@@ -744,6 +750,20 @@ export function browserAI(page, options = {}) {
         throw new Error(`browser-ai: agent referenced an unknown element for goal "${resolvedGoal}"`);
       }
 
+      // The decision call can take seconds, during which an earlier action's
+      // result may have landed - then this action was chosen against a page
+      // that's no longer there (e.g. it could overwrite a now-satisfied goal).
+      // Discard it and decide again from a fresh snapshot. A discarded
+      // decision isn't an agent step, so it doesn't count toward maxSteps;
+      // MAX_STALE_REDECIDES bounds how many in a row.
+      const beforeText = await evaluateStable(collectVisibleText, 4000);
+      if (beforeText !== pageText && staleRedecides < MAX_STALE_REDECIDES) {
+        staleRedecides++;
+        step--;
+        continue;
+      }
+      staleRedecides = 0;
+
       // record keeps the placeholder value (if any) - it feeds into the
       // *next* iteration's prompt as "actions already taken", so a real
       // secret must never end up in it, only in the actual browser action.
@@ -768,9 +788,6 @@ export function browserAI(page, options = {}) {
         );
       }
 
-      // Read right before acting, not reuse pageText: the decision call can
-      // take seconds, during which an earlier action's result may have landed.
-      const beforeText = await evaluateStable(collectVisibleText, 4000);
       await perform({ ...plannedStep, value: substitutePlaceholders(plannedStep.value, secrets) });
       await waitForSettled(beforeText);
       const record = { id: decision.id, description: target.text, ...plannedStep };
