@@ -610,11 +610,6 @@ export function browserAI(page, options = {}) {
 
     for (let step = 0; step < maxSteps; step++) {
       const elements = await snapshot();
-      if (elements.length === 0) {
-        throw new Error(
-          `browser-ai: no visible interactive elements found for goal "${resolvedGoal}"${await botChallengeHint()}`
-        );
-      }
       const pageText = await evaluateStable(collectVisibleText, 4000);
       const decision = await decideAction(resolvedGoal, elements, { includeDone: true, history, pageText });
 
@@ -632,6 +627,13 @@ export function browserAI(page, options = {}) {
             'disagreed - continuing.'
         );
         continue;
+      }
+      // Checked only after the done branch: a goal can already be met on a
+      // text-only page (e.g. a confirmation page) that has no controls.
+      if (elements.length === 0) {
+        throw new Error(
+          `browser-ai: no visible interactive elements found for goal "${resolvedGoal}"${await botChallengeHint()}`
+        );
       }
       if (!decision || decision.id === undefined || decision.id === null) {
         throw new Error(`browser-ai: agent could not resolve a next step for goal "${resolvedGoal}"`);
