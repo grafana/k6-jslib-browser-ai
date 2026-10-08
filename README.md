@@ -57,9 +57,9 @@ These are referenced above and in the examples below, rather than spelled out on
 
 ### Secrets and variables
 
-`{{name}}` in an instruction/goal/condition pulls from:
-- `secrets` - hidden from the LLM; the real value is substituted in only *after* the decision is made.
-- `variables` - visible to it; substituted in *before* the decision, for anything that isn't sensitive.
+`{{name}}` placeholders are resolved as follows:
+- `secrets` (`act()` with a string instruction, and `agent()`) - kept as placeholders in the instruction/goal; substituted only into the chosen action's `value` immediately before execution.
+- `variables` (all six AI methods) - visible to the LLM; substituted into the instruction/goal/condition/assertion before the LLM call.
 
 Variables, for anything safe to show the model:
 
