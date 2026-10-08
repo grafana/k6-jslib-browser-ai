@@ -37,10 +37,10 @@ ANTHROPIC_TOKEN=your_token k6 run examples/basic.test.js
 
 - `browser` - drop-in for `k6/browser`'s `browser`; `.newPage()` returns an AI-ready page
 - `browserAI(page, options?)` - wraps an already-open page directly
-- `page.ai.act(instruction | Step, { secrets?, variables? })` - run one action, or replay a `Step` (e.g. from `observe()`) with no LLM call
+- `page.ai.act(instruction | Step, { secrets?, variables? })` - run one action, or replay a `Step` (e.g. from `observe()`) with no LLM call. Can also resolve to a `scroll` (no element needed) when the instruction needs content revealed that isn't on the page yet.
 - `page.ai.observe(instruction, { variables? })` - matching elements as `Step[]`, ready to pass into `act()`
 - `page.ai.extract(instruction, { schema?, variables? })` - extract structured data
-- `page.ai.agent(goal, { maxSteps?, secrets?, variables?, verifyDone? })` - step until done. Independently re-checks the goal against the page's visible text.
+- `page.ai.agent(goal, { maxSteps?, secrets?, variables?, verifyDone? })` - step until done, scrolling to reveal more content when needed. Independently re-checks the goal against the page's visible text.
   - `maxSteps` (number, default 10); `verifyDone` (boolean, default true) - set `false` to skip the independent re-check.
 - `page.ai.wait(condition, { timeout?, interval?, variables? })` - poll a condition instead of a hardcoded wait
   - `timeout` (ms, default 10000); `interval` (ms, default 500).
@@ -136,6 +136,7 @@ More examples can be found in [examples](examples/).
 - Iframe support: one level deep, same-origin only.
 - Bot-detection/CAPTCHA walls is a bit flaky.
 - No shadow-DOM piercing, multi-tab/popup follow, drag-and-drop, or file upload.
+- `scroll` (via `act()`/`agent()`) scrolls the window by one viewport, not an inner scrollable container.
 
 ## License
 

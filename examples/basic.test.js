@@ -14,7 +14,7 @@ export const options = {
 };
 
 export default async function () {
-  const page = await browser.newPage({ verbose: true });
+  const page = await browser.newPage();
   let ok = false;
 
   try {
