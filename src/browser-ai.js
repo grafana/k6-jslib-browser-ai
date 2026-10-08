@@ -686,7 +686,7 @@ export function browserAI(page, options = {}) {
   function progressSignature(pageText, elements) {
     const controls = elements
       .filter((el) => el.tag === 'input' || el.tag === 'select' || el.tag === 'textarea')
-      .map((el) => [el.selector, el.text, el.checked]);
+      .map((el) => [el.selector, el.text, el.checked, el.valueLength]);
     return JSON.stringify([page.url(), pageText, controls]);
   }
 

@@ -220,6 +220,12 @@ function collectInteractiveElements(maxElements) {
       if (tag === 'input' && (type === 'checkbox' || type === 'radio')) {
         entry.checked = el.checked;
       }
+      // A long typed value is cut off in `text`; its length keeps further
+      // typing observable (e.g. to tell a repeated keypress that's still
+      // making progress from a stuck one). Never set for password fields.
+      if ((tag === 'textarea' || tag === 'input') && type !== 'password' && el.value && el.value.length > 120) {
+        entry.valueLength = el.value.length;
+      }
 
       results.push(entry);
     }
