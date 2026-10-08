@@ -135,11 +135,11 @@ More examples can be found in [examples](examples/).
 - Don't guess when hydration is done - use `wait()` for that.
 - `wait()`: word conditions around a fact (the URL), not a vague state.
 - `maxElements` (150 default) can truncate link-dense pages.
-- Iframe support: one level deep, same-origin only.
+- Iframe support: one level deep, same-origin only (for visible text too, not just elements).
 - Bot-detection/CAPTCHA walls is a bit flaky.
 - No shadow-DOM piercing, multi-tab/popup follow, drag-and-drop, or file upload.
 - `scroll` (via `act()`/`agent()`) scrolls the window by one viewport, not an inner scrollable container.
-- `agent()` reads only the first 4000 characters of visible text, and after each action waits up to 1s for that text to change and settle - an action that changes no text (e.g., checking a box) costs the full wait.
+- `agent()` reads only the first 4000 characters of visible text, and after each action waits up to 1s for that text to change and settle - an action that changes no text (e.g., checking a box) costs the full wait. If the page text changes while the LLM is deciding, the chosen action is discarded and decided again (once in a row, not counted toward `maxSteps`), at the cost of an extra LLM call.
 
 ## License
 
