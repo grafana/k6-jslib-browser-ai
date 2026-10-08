@@ -735,8 +735,6 @@ export function browserAI(page, options = {}) {
         );
         continue;
       }
-      // Only the decision right after a rejection gets the note.
-      rejectedDoneReason = undefined;
 
       // The decision call can take seconds, during which an earlier action's
       // result may have landed - then this action (a click, a scroll, ...)
@@ -752,6 +750,9 @@ export function browserAI(page, options = {}) {
         continue;
       }
       staleRedecides = 0;
+      // Only the decision right after a rejection gets the note - and a
+      // decision discarded as stale above doesn't count, so its redo keeps it.
+      rejectedDoneReason = undefined;
 
       // Repeating the identical scroll is deliberate progress only while
       // each one actually changes the page; scrolls that report no change
