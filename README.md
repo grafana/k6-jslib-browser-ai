@@ -40,7 +40,7 @@ ANTHROPIC_TOKEN=your_token k6 run examples/basic.test.js
 - `page.ai.act(instruction | step, { secrets?, variables? })` - run one action or replay an `observe()` result with no LLM call. Can also resolve to a `scroll` (no element needed) when the instruction needs content revealed that isn't on the page yet.
 - `page.ai.observe(instruction, { variables? })` - matching elements, ready to pass into `act()`
 - `page.ai.extract(instruction, { schema?, variables? })` - extract structured data
-- `page.ai.agent(goal, { maxSteps?, secrets?, variables?, verifyDone? })` - step until done, scrolling to reveal more content when needed. Independently re-checks the goal against the page's visible text.
+- `page.ai.agent(goal, { maxSteps?, secrets?, variables?, verifyDone? })` - step until done, scrolling to reveal more content when needed. Each step sees the page's visible text, and waits for the page to settle after acting. Independently re-checks the goal against that text.
 - `page.ai.wait(condition, { timeout?, interval?, variables? })` - poll a condition instead of a hardcoded wait
 - `page.ai.assert(assertion, { variables? })` - check a condition once; throws if it isn't currently met
 
@@ -85,6 +85,7 @@ await page.ai.act(matches[0]);
 - Bot-detection/CAPTCHA walls is a bit flaky.
 - No shadow-DOM piercing, multi-tab/popup follow, drag-and-drop, or file upload.
 - `scroll` (via `act()`/`agent()`) scrolls the window by one viewport, not an inner scrollable container.
+- `agent()` reads only the first 4000 characters of visible text, and after each action waits up to 1s for that text to change and settle - an action that changes no text (e.g. checking a box) costs the full wait.
 
 ## License
 
