@@ -24,10 +24,10 @@ const OCCLUSION_MAX_WAIT_MS = 1200;
 // it. (If the text changes each time, e.g. asking for another pizza, the
 // repetition is making progress.)
 const STUCK_REPEAT_THRESHOLD = 3;
-// After an agent() action, wait for the visible text to stop changing before
-// the next snapshot: a click usually returns before the page has fetched and
-// rendered its result, so reading immediately sees the *previous* state.
-const TEXT_SETTLE_MIN_WAIT_MS = 300;
+// After an agent() action, wait for the visible text to change and then stop
+// changing before the next snapshot: a click usually returns before the page
+// has fetched and rendered its result, so reading immediately sees the
+// *previous* state.
 const TEXT_SETTLE_POLL_MS = 200;
 const TEXT_SETTLE_STABLE_READS = 2;
 const TEXT_SETTLE_MAX_WAIT_MS = 1000;
@@ -636,23 +636,29 @@ export function browserAI(page, options = {}) {
     return !!(decision && decision.met);
   }
 
-  // Gives the page's reaction to an action time to land. Resolves once the
-  // visible text has been unchanged for TEXT_SETTLE_STABLE_READS polls in a row
-  // (after a short minimum wait for in-flight requests to start rendering),
-  // or after TEXT_SETTLE_MAX_WAIT_MS, whichever comes first - never throws, since
-  // the worst case is just the old behavior of not waiting.
-  async function waitForSettled() {
+  // Gives the page's reaction to an action time to land. `beforeText` is the
+  // visible text from just before the action: stability is only counted once
+  // the text has differed from it (so a not-yet-rendered result can't be
+  // mistaken for "settled"), and then needs TEXT_SETTLE_STABLE_READS equal
+  // polls in a row. Gives up after TEXT_SETTLE_MAX_WAIT_MS - which is also
+  // what an action that legitimately changes no text (e.g. checking a box)
+  // costs - and never throws, since the worst case is just the old behavior
+  // of not waiting.
+  async function waitForSettled(beforeText) {
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const deadline = Date.now() + TEXT_SETTLE_MAX_WAIT_MS;
     try {
-      await sleep(TEXT_SETTLE_MIN_WAIT_MS);
-      let last = await evaluateStable(collectVisibleText, 4000);
-      let stable = 1;
-      while (stable < TEXT_SETTLE_STABLE_READS && Date.now() < deadline) {
+      let last = beforeText;
+      let changed = false;
+      let stable = 0;
+      while (Date.now() < deadline) {
         await sleep(TEXT_SETTLE_POLL_MS);
         const current = await evaluateStable(collectVisibleText, 4000);
-        stable = current === last ? stable + 1 : 1;
+        if (!changed && current === beforeText) continue;
+        stable = changed && current === last ? stable + 1 : 1;
+        changed = true;
         last = current;
+        if (stable >= TEXT_SETTLE_STABLE_READS) return;
       }
     } catch (err) {
       // Best effort only - e.g., a navigation tearing down the context.
@@ -762,8 +768,11 @@ export function browserAI(page, options = {}) {
         );
       }
 
+      // Read right before acting, not reuse pageText: the decision call can
+      // take seconds, during which an earlier action's result may have landed.
+      const beforeText = await evaluateStable(collectVisibleText, 4000);
       await perform({ ...plannedStep, value: substitutePlaceholders(plannedStep.value, secrets) });
-      await waitForSettled();
+      await waitForSettled(beforeText);
       const record = { id: decision.id, description: target.text, ...plannedStep };
       history.push(record);
       pageTexts.push(pageText);
