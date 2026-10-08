@@ -40,7 +40,7 @@ ANTHROPIC_TOKEN=your_token k6 run examples/basic.test.js
 - `page.ai.act(instruction | Step, { secrets?, variables? })` - run one action, or replay a `Step` (e.g. from `observe()`) with no LLM call. Can also resolve to a `scroll` (no element needed) when the instruction needs content revealed that isn't on the page yet.
 - `page.ai.observe(instruction, { variables? })` - matching elements as `Step[]`, ready to pass into `act()`
 - `page.ai.extract(instruction, { schema?, variables? })` - extract structured data
-- `page.ai.agent(goal, { maxSteps?, secrets?, variables?, verifyDone? })` - step until done, scrolling to reveal more content when needed. Independently re-checks the goal against the page's visible text.
+- `page.ai.agent(goal, { maxSteps?, secrets?, variables?, verifyDone? })` - step until done, scrolling to reveal more content when needed. Independently re-checks the goal against the page's visible text, and feeds that check's own reasoning back in if it disagrees, so a rejected "done" claim isn't just retried blind.
   - `maxSteps` (number, default 10); `verifyDone` (boolean, default true) - set `false` to skip the independent re-check.
 - `page.ai.wait(condition, { timeout?, interval?, variables? })` - poll a condition instead of a hardcoded wait
   - `timeout` (ms, default 10000); `interval` (ms, default 500).

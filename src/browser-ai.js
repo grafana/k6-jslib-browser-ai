@@ -75,7 +75,8 @@ const VERIFY_DONE_SYSTEM_PROMPT =
   'been achieved, based only on the current page\'s visible text and URL - ' +
   'not on the acting model\'s own claim. Be skeptical: if the page doesn\'t ' +
   'clearly show the goal is met, say it is not. Reply with ONLY compact ' +
-  'JSON: {"met": true|false}, no prose, no markdown fences.';
+  'JSON: {"met": true|false, "reason": <string>}, no prose, no markdown ' +
+  'fences.';
 
 // Module-level (not per browserAI() call) so it's shared across every
 // act()/agent() decision in this process - a fresh page wrap on the next
@@ -404,15 +405,21 @@ export function browserAI(page, options = {}) {
   // Shared by ai.act() and ai.agent(): resolve an instruction/goal against
   // the current element snapshot into { id, action, value } (or, when
   // includeDone is set, { done: true, reason } once the goal is met).
-  function decideAction(instruction, elements, { includeDone, history } = {}) {
+  function decideAction(instruction, elements, { includeDone, history, rejectedDoneReason } = {}) {
     const priorContext = contextNote();
     if (includeDone) {
+      const rejectionNote = rejectedDoneReason
+        ? `\n\nA moment ago the goal was reported done, but an independent check ` +
+          `disagreed: "${rejectedDoneReason}". Re-examine the current page before ` +
+          'concluding done again.'
+        : '';
       const decision = askLlm(
         AGENT_SYSTEM_PROMPT,
         `Goal: ${instruction}\n\n` +
           `Actions taken so far: ${JSON.stringify(history || [])}\n\n` +
           elementPrompt(instruction, elements) +
-          priorContext
+          priorContext +
+          rejectionNote
       );
       if (decision && decision.done) return { done: true, reason: decision.reason };
       return decision;
@@ -617,7 +624,7 @@ export function browserAI(page, options = {}) {
       `Goal: ${goal}\n\nActions already taken: ${JSON.stringify(history)}\n\n` +
         `Current URL: ${page.url()}\n\nCurrent visible page text:\n${text}`
     );
-    return !!(decision && decision.met);
+    return { met: !!(decision && decision.met), reason: decision && decision.reason };
   }
 
   function stepsEqual(a, b) {
@@ -636,26 +643,41 @@ export function browserAI(page, options = {}) {
     const secrets = agentOpts.secrets;
     const resolvedGoal = substitutePlaceholders(goal, agentOpts.variables);
     const history = [];
+    // Set only right after a rejected "done" claim, and only read by the
+    // very next decision call - see below for why a bare retry (same
+    // history, same unchanged elements) would otherwise just repeat the
+    // same wrong judgment forever.
+    let rejectedDoneReason;
 
     for (let step = 0; step < maxSteps; step++) {
       const elements = await snapshot();
-      const decision = await decideAction(resolvedGoal, elements, { includeDone: true, history });
+      const decision = await decideAction(resolvedGoal, elements, { includeDone: true, history, rejectedDoneReason });
 
       if (decision && decision.done) {
         const shouldVerify = agentOpts.verifyDone !== false;
-        if (!shouldVerify || (await verifyGoalMet(resolvedGoal, history))) {
+        const verification = shouldVerify ? await verifyGoalMet(resolvedGoal, history) : { met: true };
+        if (verification.met) {
           return { done: true, reason: decision.reason, steps: history };
         }
         // Self-reported "done" didn't hold up against the page's own
-        // text - don't trust it, and don't return early. Loop again: a
-        // fresh snapshot next iteration may lead the model to a different
-        // (correct) decision, still bounded by maxSteps either way.
+        // text - don't trust it, and don't return early. A bare retry
+        // would hand the next decision the exact same history and the
+        // exact same (unchanged) element snapshot, so it has nothing new
+        // to react to and tends to just repeat the same wrong judgment -
+        // carry the independent check's own reason forward instead, so
+        // the next attempt has something concrete to reconsider.
+        rejectedDoneReason = verification.reason || 'the independent check could not confirm that the goal was met';
+        // The verifier's reason can quote page content, so it stays out of
+        // the always-visible warning and only goes to the debug log.
+        console.debug(`[browser-ai] agent() verification reason: ${rejectedDoneReason}`);
         console.warn(
           `[browser-ai] agent() reported done ("${decision.reason}") but independent verification ` +
             'disagreed - continuing.'
         );
         continue;
       }
+      // Only the decision right after a rejection gets the note.
+      rejectedDoneReason = undefined;
 
       // Repeating the identical scroll is deliberate progress only while
       // each one actually changes the page; scrolls that report no change
