@@ -275,23 +275,31 @@ function collectInteractiveElements(maxElements) {
 // wholesale - keeping that method's natural line-break handling - while a
 // wrapper far taller than the viewport (<body>, a long <article>) gets
 // recursed into instead of taken as one giant blob.
+//
+// Visible same-origin iframes are read too, one level deep (matching what
+// collectInteractiveElements() can act on), with each frame's text measured
+// against that frame's own viewport and appended after the page's. A
+// cross-origin frame's contentDocument isn't reachable, so it's skipped.
 function collectVisibleText(maxChars) {
   const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE']);
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
 
-  function inViewportRect(rect) {
-    return rect.bottom > 0 && rect.top < vh && rect.right > 0 && rect.left < vw;
+  function inViewportRect(rect, view) {
+    return rect.bottom > 0 && rect.top < view.innerHeight && rect.right > 0 && rect.left < view.innerWidth;
   }
 
-  function reasonablySized(rect) {
-    return rect.height <= vh * 1.5 && rect.width <= vw * 1.5;
+  function reasonablySized(rect, view) {
+    return rect.height <= view.innerHeight * 1.5 && rect.width <= view.innerWidth * 1.5;
+  }
+
+  function isRendered(el) {
+    const style = el.ownerDocument.defaultView.getComputedStyle(el);
+    return style.display !== 'none' && style.visibility !== 'hidden';
   }
 
   function walk(el) {
     if (SKIP_TAGS.has(el.tagName)) return [];
-    const style = el.ownerDocument.defaultView.getComputedStyle(el);
-    if (style.display === 'none' || style.visibility === 'hidden') return [];
+    if (!isRendered(el)) return [];
+    const view = el.ownerDocument.defaultView;
 
     const rect = el.getBoundingClientRect();
     // A real box (nonzero size) tells us where the element actually is,
@@ -306,8 +314,8 @@ function collectVisibleText(maxChars) {
     // actual headline text from every read()/waitUntil() call).
     const hasBox = rect.width > 0 || rect.height > 0;
     if (hasBox) {
-      if (!inViewportRect(rect)) return [];
-      if (reasonablySized(rect) || el.children.length === 0) {
+      if (!inViewportRect(rect, view)) return [];
+      if (reasonablySized(rect, view) || el.children.length === 0) {
         const text = (el.innerText || '').trim();
         return text ? [text] : [];
       }
@@ -317,7 +325,20 @@ function collectVisibleText(maxChars) {
     return parts;
   }
 
-  return walk(document.body).join('\n\n').slice(0, maxChars);
+  const parts = walk(document.body);
+  for (const frame of document.querySelectorAll('iframe')) {
+    let innerBody = null;
+    try {
+      innerBody = frame.contentDocument && frame.contentDocument.body;
+    } catch (err) {
+      innerBody = null;
+    }
+    if (!innerBody || !isRendered(frame)) continue;
+    const rect = frame.getBoundingClientRect();
+    if (!(rect.width > 0 || rect.height > 0) || !inViewportRect(rect, window)) continue;
+    parts.push(...walk(innerBody));
+  }
+  return parts.join('\n\n').slice(0, maxChars);
 }
 
 export { collectInteractiveElements, collectVisibleText };
