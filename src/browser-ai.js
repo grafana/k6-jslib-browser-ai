@@ -463,14 +463,10 @@ export function browserAI(page, options = {}) {
     // final value. Use variables for anything that isn't sensitive.
     const resolvedInstruction = substitutePlaceholders(instruction, variables);
 
+    // An empty list can still legitimately resolve to "scroll" (the
+    // current viewport can hold no controls at all) - no other decision
+    // is possible with zero elements, so nothing further to guard here.
     const elements = await snapshot();
-    // The LLM path may still choose "scroll" from an empty list (the
-    // current viewport can hold no controls); Jev needs choices to pick from.
-    if (elements.length === 0 && decisionProvider === 'jev') {
-      throw new Error(
-        `browser-ai: no visible interactive elements found for "${resolvedInstruction}"${await botChallengeHint()}`
-      );
-    }
     const decision = await decideAction(resolvedInstruction, elements);
 
     if (decision && decision.action === 'scroll') {
@@ -643,11 +639,6 @@ export function browserAI(page, options = {}) {
 
     for (let step = 0; step < maxSteps; step++) {
       const elements = await snapshot();
-      if (elements.length === 0 && decisionProvider === 'jev') {
-        throw new Error(
-          `browser-ai: no visible interactive elements found for goal "${resolvedGoal}"${await botChallengeHint()}`
-        );
-      }
       const decision = await decideAction(resolvedGoal, elements, { includeDone: true, history });
 
       if (decision && decision.done) {

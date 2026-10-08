@@ -84,7 +84,7 @@ await page.ai.act(matches[0]);
 - Iframe support: one level deep, same-origin only.
 - Bot-detection/CAPTCHA walls is a bit flaky.
 - No shadow-DOM piercing, multi-tab/popup follow, drag-and-drop, or file upload.
-- `scroll` (via `act()`/`agent()`) scrolls the window by one viewport, not an inner scrollable container, and isn't available under `decisionProvider: 'jev'`.
+- `scroll` (via `act()`/`agent()`) scrolls the window by one viewport, not an inner scrollable container.
 
 ## License
 
