@@ -666,10 +666,13 @@ export function browserAI(page, options = {}) {
         // to react to and tends to just repeat the same wrong judgment -
         // carry the independent check's own reason forward instead, so
         // the next attempt has something concrete to reconsider.
-        rejectedDoneReason = verification.reason;
+        rejectedDoneReason = verification.reason || 'the independent check could not confirm that the goal was met';
+        // The verifier's reason can quote page content, so it stays out of
+        // the always-visible warning and only goes to the debug log.
+        console.debug(`[browser-ai] agent() verification reason: ${rejectedDoneReason}`);
         console.warn(
           `[browser-ai] agent() reported done ("${decision.reason}") but independent verification ` +
-            `disagreed${verification.reason ? ` ("${verification.reason}")` : ''} - continuing.`
+            'disagreed - continuing.'
         );
         continue;
       }
