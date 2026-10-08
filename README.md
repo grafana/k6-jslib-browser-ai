@@ -51,7 +51,7 @@ ANTHROPIC_TOKEN=your_token k6 run examples/basic.test.js
 These are referenced above and in the examples below, rather than spelled out on every line:
 
 - **`instruction` / `goal` / `condition` / `assertion`** - a plain natural-language string, e.g. `'click the sign in button'`.
-- **`Step`** - `{ selector: string, action: 'click'|'fill'|'check'|'uncheck'|'select'|'press', value?: string, frameSelector?: string }`. This is exactly what `observe()` returns (one per match) and what `act()` accepts in place of an `instruction` to skip the decision step entirely - you're not expected to build one by hand, just pass one straight through.
+- **`Step`** - an element step `{ selector: string, action: 'click'|'fill'|'check'|'uncheck'|'select'|'press', value?: string, frameSelector?: string, description?: string }`, or a scroll step `{ action: 'scroll', value: 'up'|'down' }`. `observe()` returns element steps; `act()` can return either kind. Passing a step into `act()` skips the LLM decision - you're not expected to build one by hand, just pass one straight through.
 - **`secrets` / `variables`** - a plain object mapping a `{{name}}` placeholder to its string value, e.g. `{ password: 'actual value' }`. See [Secrets and variables](#secrets-and-variables) below.
 - **`schema`** (`extract()` only) - any object shape you want the result to match, e.g. `{ name: 'string' }`. Not real JSON Schema - it's serialized into the prompt as a hint for the model, with no local validation.
 
