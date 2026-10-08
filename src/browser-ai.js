@@ -19,9 +19,18 @@ const SETTLE_MAX_WAIT_MS = 2000;
 const OCCLUSION_POLL_MS = 150;
 const OCCLUSION_MAX_WAIT_MS = 1200;
 // Re-deriving the exact same action from a *fresh* snapshot this many
-// times in a row is a click-loop, not deliberate repetition - stop rather
-// than burn the rest of maxSteps on it.
+// times in a row *with the page's visible text unchanged* is a click-loop,
+// not deliberate repetition - stop rather than burn the rest of maxSteps on
+// it. (If the text changes each time, e.g. asking for another pizza, the
+// repetition is making progress.)
 const STUCK_REPEAT_THRESHOLD = 3;
+// After an agent() action, wait for the visible text to stop changing before
+// the next snapshot: a click usually returns before the page has fetched and
+// rendered its result, so reading immediately sees the *previous* state.
+const TEXT_SETTLE_MIN_WAIT_MS = 300;
+const TEXT_SETTLE_POLL_MS = 200;
+const TEXT_SETTLE_STABLE_READS = 2;
+const TEXT_SETTLE_MAX_WAIT_MS = 1000;
 
 const ACT_SYSTEM_PROMPT =
   'You control a web browser during a load test. You are given a natural ' +
@@ -46,9 +55,9 @@ const EXTRACT_SYSTEM_PROMPT =
 const AGENT_SYSTEM_PROMPT =
   'You are driving a web browser toward a goal, one action at a time, ' +
   'during a load test. You are given the goal, the actions already taken, ' +
-  'and the currently visible elements. First decide whether the goal is ' +
-  'already satisfied. If it is, respond with {"done": true, "reason": ' +
-  '<string>}. Otherwise choose exactly one next action and respond with ' +
+  'the page\'s visible text, and the currently visible elements. First ' +
+  'decide whether the goal is already satisfied. If it is, respond with ' +
+  '{"done": true, "reason": <string>}. Otherwise choose exactly one next action and respond with ' +
   '{"done": false, "id": <element id>, "action": "click"|"fill"|"check"|' +
   '"uncheck"|"select"|"press", "value": <string, optional>}. ' +
   'Reply with ONLY compact JSON, no prose, no markdown fences.';
@@ -346,13 +355,18 @@ export function browserAI(page, options = {}) {
   // Shared by ai.act() and ai.agent(): resolve an instruction/goal against
   // the current element snapshot into { id, action, value } (or, when
   // includeDone is set, { done: true, reason } once the goal is met).
-  function decideAction(instruction, elements, { includeDone, history } = {}) {
+  async function decideAction(instruction, elements, { includeDone, history, pageText } = {}) {
     const priorContext = contextNote();
     if (includeDone) {
+      // Interactive elements alone can't show whether a goal about page
+      // content (e.g. "a pizza with mushrooms") is met - that content is
+      // plain text, so include it too.
+      const text = pageText !== undefined ? pageText : await evaluateStable(collectVisibleText, 4000);
       const decision = askLlm(
         AGENT_SYSTEM_PROMPT,
         `Goal: ${instruction}\n\n` +
           `Actions taken so far: ${JSON.stringify(history || [])}\n\n` +
+          `Current visible page text:\n${text}\n\n` +
           elementPrompt(instruction, elements) +
           priorContext
       );
@@ -552,6 +566,29 @@ export function browserAI(page, options = {}) {
     return !!(decision && decision.met);
   }
 
+  // Gives the page's reaction to an action time to land. Resolves once the
+  // visible text has been unchanged for TEXT_SETTLE_STABLE_READS polls in a row
+  // (after a short minimum wait for in-flight requests to start rendering),
+  // or after TEXT_SETTLE_MAX_WAIT_MS, whichever comes first - never throws, since
+  // the worst case is just the old behavior of not waiting.
+  async function waitForSettled() {
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const deadline = Date.now() + TEXT_SETTLE_MAX_WAIT_MS;
+    try {
+      await sleep(TEXT_SETTLE_MIN_WAIT_MS);
+      let last = await evaluateStable(collectVisibleText, 4000);
+      let stable = 1;
+      while (stable < TEXT_SETTLE_STABLE_READS && Date.now() < deadline) {
+        await sleep(TEXT_SETTLE_POLL_MS);
+        const current = await evaluateStable(collectVisibleText, 4000);
+        stable = current === last ? stable + 1 : 1;
+        last = current;
+      }
+    } catch (err) {
+      // Best effort only - e.g., a navigation tearing down the context.
+    }
+  }
+
   function stepsEqual(a, b) {
     return (
       !!a &&
@@ -568,6 +605,8 @@ export function browserAI(page, options = {}) {
     const secrets = agentOpts.secrets;
     const resolvedGoal = substitutePlaceholders(goal, agentOpts.variables);
     const history = [];
+    // Visible text each step was decided against, parallel to history.
+    const pageTexts = [];
 
     for (let step = 0; step < maxSteps; step++) {
       const elements = await snapshot();
@@ -576,7 +615,8 @@ export function browserAI(page, options = {}) {
           `browser-ai: no visible interactive elements found for goal "${resolvedGoal}"${await botChallengeHint()}`
         );
       }
-      const decision = await decideAction(resolvedGoal, elements, { includeDone: true, history });
+      const pageText = await evaluateStable(collectVisibleText, 4000);
+      const decision = await decideAction(resolvedGoal, elements, { includeDone: true, history, pageText });
 
       if (decision && decision.done) {
         const shouldVerify = agentOpts.verifyDone !== false;
@@ -613,7 +653,12 @@ export function browserAI(page, options = {}) {
       };
 
       const recentHistory = history.slice(-(STUCK_REPEAT_THRESHOLD - 1));
-      if (recentHistory.length === STUCK_REPEAT_THRESHOLD - 1 && recentHistory.every((h) => stepsEqual(h, plannedStep))) {
+      const recentTexts = pageTexts.slice(-(STUCK_REPEAT_THRESHOLD - 1));
+      if (
+        recentHistory.length === STUCK_REPEAT_THRESHOLD - 1 &&
+        recentHistory.every((h) => stepsEqual(h, plannedStep)) &&
+        recentTexts.every((t) => t === pageText)
+      ) {
         throw new Error(
           `browser-ai: agent() looks stuck - re-derived the same action (${plannedStep.action} on ` +
             `"${plannedStep.selector}") from a fresh snapshot ${STUCK_REPEAT_THRESHOLD} times in a row for ` +
@@ -622,8 +667,10 @@ export function browserAI(page, options = {}) {
       }
 
       await perform({ ...plannedStep, value: substitutePlaceholders(plannedStep.value, secrets) });
+      await waitForSettled();
       const record = { id: decision.id, description: target.text, ...plannedStep };
       history.push(record);
+      pageTexts.push(pageText);
       if (contextEnabled) {
         recordContext({ instruction: resolvedGoal, description: target.text, action: plannedStep.action });
       }
