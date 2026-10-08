@@ -19,9 +19,10 @@ const SETTLE_MAX_WAIT_MS = 2000;
 const OCCLUSION_POLL_MS = 150;
 const OCCLUSION_MAX_WAIT_MS = 1200;
 // Re-deriving the exact same action from a *fresh* snapshot this many
-// times in a row *with the page's visible text unchanged* is a click-loop,
-// not deliberate repetition - stop rather than burn the rest of maxSteps on
-// it. (If the text changes each time, e.g. asking for another pizza, the
+// times in a row *with nothing observable having changed* (URL, visible
+// text, form-control state) is a click-loop, not deliberate repetition -
+// stop rather than burn the rest of maxSteps on it. (If something changes
+// each time, e.g. asking for another pizza or bumping a counter input, the
 // repetition is making progress.)
 const STUCK_REPEAT_THRESHOLD = 3;
 // After an agent() action, wait for the visible text to change and then stop
@@ -677,6 +678,18 @@ export function browserAI(page, options = {}) {
     }
   }
 
+  // Everything observable that could tell one agent() step's starting point
+  // from another's: the URL, the visible text, and the state of form controls
+  // (an input's value or a checkbox's checked state isn't in the page's
+  // innerText, but the element snapshot exposes it). Used to tell a repeated
+  // action that's making progress from a no-op loop.
+  function progressSignature(pageText, elements) {
+    const controls = elements
+      .filter((el) => el.tag === 'input' || el.tag === 'select' || el.tag === 'textarea')
+      .map((el) => [el.selector, el.text, el.checked]);
+    return JSON.stringify([page.url(), pageText, controls]);
+  }
+
   function stepsEqual(a, b) {
     return (
       !!a &&
@@ -693,8 +706,9 @@ export function browserAI(page, options = {}) {
     const secrets = agentOpts.secrets;
     const resolvedGoal = substitutePlaceholders(goal, agentOpts.variables);
     const history = [];
-    // Visible text each step was decided against, parallel to history.
-    const pageTexts = [];
+    // What each step was decided against (see progressSignature), parallel to
+    // history.
+    const signatures = [];
     let staleRedecides = 0;
     // Set only right after a rejected "done" claim, and only read by the
     // very next decision call - see below for why a bare retry (same
@@ -708,6 +722,7 @@ export function browserAI(page, options = {}) {
       // action differs) instead of passing on a mismatched pair.
       const pageText = await evaluateStable(collectVisibleText, 4000);
       const elements = await snapshot();
+      const signature = progressSignature(pageText, elements);
       const decision = await decideAction(resolvedGoal, elements, {
         includeDone: true,
         history,
@@ -784,7 +799,7 @@ export function browserAI(page, options = {}) {
           );
         }
         history.push(record);
-        pageTexts.push(pageText);
+        signatures.push(signature);
         if (contextEnabled) {
           recordContext({ instruction: resolvedGoal, description: record.description, action: 'scroll' });
         }
@@ -812,11 +827,11 @@ export function browserAI(page, options = {}) {
       };
 
       const recentHistory = history.slice(-(STUCK_REPEAT_THRESHOLD - 1));
-      const recentTexts = pageTexts.slice(-(STUCK_REPEAT_THRESHOLD - 1));
+      const recentSignatures = signatures.slice(-(STUCK_REPEAT_THRESHOLD - 1));
       if (
         recentHistory.length === STUCK_REPEAT_THRESHOLD - 1 &&
         recentHistory.every((h) => stepsEqual(h, plannedStep)) &&
-        recentTexts.every((t) => t === pageText)
+        recentSignatures.every((sig) => sig === signature)
       ) {
         throw new Error(
           `browser-ai: agent() looks stuck - re-derived the same action (${plannedStep.action} on ` +
@@ -829,7 +844,7 @@ export function browserAI(page, options = {}) {
       await waitForSettled(beforeText);
       const record = { id: decision.id, description: target.text, ...plannedStep };
       history.push(record);
-      pageTexts.push(pageText);
+      signatures.push(signature);
       if (contextEnabled) {
         recordContext({ instruction: resolvedGoal, description: target.text, action: plannedStep.action });
       }
