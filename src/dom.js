@@ -29,9 +29,9 @@ function collectInteractiveElements(maxElements) {
   }
 
   // Disabled controls can't meaningfully be acted on - excluding them from
-  // the candidate set entirely means neither the LLM nor Jev can ever pick
-  // one, and there's no "should we force-click a disabled thing" question
-  // to answer downstream. `.disabled` covers native controls (and ones
+  // the candidate set entirely means the LLM can never pick one, and
+  // there's no "should we force-click a disabled thing" question to
+  // answer downstream. `.disabled` covers native controls (and ones
   // disabled via a disabled <fieldset>); aria-disabled covers everything
   // else (e.g. an <a> or a custom [role="button"]).
   function isDisabled(el) {
