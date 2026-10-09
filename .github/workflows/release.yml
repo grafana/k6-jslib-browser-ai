@@ -34,6 +34,7 @@ jobs:
       - name: Archive
         run: |
           VERSION="${GITHUB_REF##*/}"
+          cp LICENSE dist/LICENSE
           tar -zcf "k6-browser-ai-${VERSION}.tar.gz" -C dist .
 
       - name: Create release with assets
