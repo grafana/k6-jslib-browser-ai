@@ -2,18 +2,6 @@
 
 A seamless way to drive k6 browser tests with natural-language instructions instead of selectors.
 
-## Why k6-browser-ai?
-
-- 🗣️ **Describe, don't select:** Write `page.ai.act('click the sign in button')` instead of maintaining CSS selectors that break whenever the UI changes.
-- 🔌 **Drop-in for `k6/browser`:** Import `browser` from k6-browser-ai in place of `k6/browser`. `newPage()` returns the same page with an extra `page.ai`
-  namespace, and the rest of your script stays as it is.
-- 🔁 **Replay without the LLM:** `observe()` returns steps you can pass straight into `act()` with no model call, so the expensive decision happens once
-  and the load-test loop stays cheap.
-- 🤖 **Agents that check their work:** `agent()` steps toward a goal and independently re-checks that it's done against the page's visible text. If it
-  disagrees, it feeds its reasoning into the next attempt instead of retrying blind.
-- 🔐 **Secrets stay out of your prompts:** Use `{{name}}` placeholders in your instructions and pass the real values as `secrets`. They're substituted
-  only right before the browser action, never in the text sent to the model (see [Secrets and variables](#secrets-and-variables) for the limits).
-
 ## Installation
 
 k6-browser-ai is available as a [k6 jslib](https://jslib.k6.io). It can be directly
@@ -28,8 +16,9 @@ import { browser } from "https://jslib.k6.io/k6-browser-ai/0.1.0/index.js";
 - k6 v2.0.0+
 - An Anthropic API key, provided as the `ANTHROPIC_API_KEY` (or `ANTHROPIC_TOKEN`) environment variable.
 
-> **Note:** On every call, the page's interactive elements and visible text are sent to the LLM provider. Don't run it against pages
-> showing data you aren't comfortable sharing with it.
+> **Note:** Each AI call sends some combination of the page's interactive elements, visible text, form-control state,
+> and current URL to the configured LLM, depending on the method. Replaying a `Step` through `act()` makes no LLM call, 
+> so it sends nothing. Don't use AI calls on pages that show data you aren't comfortable sharing with the LLM provider.
 
 ## Quick Start
 
