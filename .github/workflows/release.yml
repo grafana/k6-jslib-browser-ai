@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - v*
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out source code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run release
+
+      - name: Archive
+        run: |
+          VERSION="${GITHUB_REF##*/}"
+          cp LICENSE dist/LICENSE
+          tar -zcf "k6-browser-ai-${VERSION}.tar.gz" -C dist .
+
+      - name: Create release with assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF##*/}"
+          gh release create "${VERSION}" "k6-browser-ai-${VERSION}.tar.gz" dist/* --target "${GITHUB_SHA}" --title "${VERSION}"
