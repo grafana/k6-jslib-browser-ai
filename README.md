@@ -1,37 +1,148 @@
 # k6-browser-ai
 
-A JS library that adds AI-driven actions to k6's `k6/browser` module.
+A seamless way to drive k6 browser tests with natural-language instructions instead of selectors.
+
+## Installation
+
+k6-browser-ai is available as a [k6 jslib](https://jslib.k6.io). It can be directly
+imported as a dependency in your k6 script.
 
 ```javascript
-// Act
+import { browser } from "https://jslib.k6.io/k6-browser-ai/0.1.0/index.js";
+```
+
+### Requirements
+
+- k6 v2.0.0+
+- An Anthropic API key, provided as the `ANTHROPIC_API_KEY` (or `ANTHROPIC_TOKEN`) environment variable.
+
+> **Note:** Each AI call sends some combination of the page's interactive elements, visible text, form-control state,
+> and current URL to the configured LLM, depending on the method. Replaying a `Step` through `act()` makes no LLM call, 
+> so it sends nothing. Don't use AI calls on pages that show data you aren't comfortable sharing with the LLM provider.
+
+## Quick Start
+
+The following example demonstrates how to use k6-browser-ai in a k6 script.
+
+The module exposes the `browser` object, which is a drop-in replacement for `k6/browser`.
+The `newPage()` method returns a page with an additional `ai` namespace that provides AI-driven actions.
+
+```javascript
+import { browser } from "https://jslib.k6.io/k6-browser-ai/0.1.0/index.js";
+
+export const options = {
+  scenarios: {
+    ui: {
+      executor: 'shared-iterations',
+      options: { browser: { type: 'chromium' } },
+    },
+  },
+};
+
+// The ingredient we want on our pizza. The agent keeps asking QuickPizza for
+// recommendations until it gets one containing it, and then the script
+// extracts and prints that pizza's name and ingredients.
+const yourFavoriteIngredient = 'mushrooms';
+
+export default async function () {
+  const page = await browser.newPage();
+
+  try {
+    // QuickPizza is our favorite place to order pizza (and a handy playground
+    // for testing), so that's where we start our hunt for the perfect one.
+    await page.goto('https://quickpizza.grafana.com', { waitUntil: 'networkidle' });
+
+    const agentOutcome = await page.ai.agent(
+      'Ask for a pizza until you get one with {{ingredient}}',
+      { variables: { ingredient: yourFavoriteIngredient }, maxSteps: 25 },
+    );
+    const { done, steps } = agentOutcome;
+    if (!done) {
+      throw new Error(`agent(): failed to get a pizza with ${yourFavoriteIngredient} after ${steps.length} steps`);
+    }
+
+    const pizza = await page.ai.extract('The recommended pizza: its name and its ingredients', {
+      schema: { name: 'string', ingredients: [] },
+    });
+    console.log(`🎉 We found a pizza with ${yourFavoriteIngredient}!`);
+    console.log(`🍕 Pizza: ${pizza.name}`);
+    console.log(`🧾 Ingredients: ${pizza.ingredients.join(', ')}`);
+  } finally {
+    await page.close();
+  }
+}
+```
+
+Run it with your API key:
+
+```sh
+ANTHROPIC_API_KEY=your_key k6 run script.js
+```
+
+## Features
+
+### 1. Act on the page
+
+Describe a single action in plain English and k6-browser-ai finds the element and performs it.
+
+```javascript
 await page.ai.act('click the sign in button');
+```
 
-// Extract data
-const user = await page.ai.extract("the user's name", { schema: { name: 'string' } });
+### 2. Observe and replay
+
+`observe()` returns the matching elements as steps. Pass a step into `act()` to replay it with no LLM call.
+
+```javascript
 const links = await page.ai.observe('every nav link');
+await page.ai.act(links[0]);
+```
 
-// Run agents
-await page.ai.agent('dismiss the cookie banner, then open settings');
+### 3. Extract data
 
-// Wait for conditions
+Pull structured data out of the page. The `schema` is a hint for the model, not a validated JSON Schema.
+
+```javascript
+const user = await page.ai.extract("the user's name", { schema: { name: 'string' } });
+```
+
+### 4. Run agents
+
+Give an agent a goal and it takes as many steps as needed (up to `maxSteps`, 10 by default), then re-checks that the goal was met.
+It returns `{ done, steps }`, so check `done` before relying on the result.
+
+```javascript
+const { done, steps } = await page.ai.agent('dismiss the cookie banner, then open settings', { maxSteps: 5 });
+if (!done) {
+  throw new Error(`agent didn't finish after ${steps.length} steps`);
+}
+```
+
+### 5. Wait for conditions
+
+Poll a condition instead of using a hardcoded wait.
+
+```javascript
 await page.ai.wait('the page has finished loading and is ready to interact with');
+```
 
-// Assert a condition (throws if not met)
+### 6. Assert conditions
+
+Check a condition once. It throws if the condition isn't met.
+
+```javascript
 await page.ai.assert('the order confirmation is showing');
 ```
 
-## Requirements
-
-- k6 v2.0.0+
-- An Anthropic API key
-
-## Usage
+## Examples
 
 Runnable examples live in `examples/`:
 
 ```
-ANTHROPIC_TOKEN=your_token k6 run examples/basic.test.js
+ANTHROPIC_API_KEY=your_key k6 run examples/basic.test.js
 ```
+
+[Here](examples/quickpizza) you can find a couple of examples for our favorite pizza site, QuickPizza 🍕
 
 ## API
 
@@ -122,21 +233,13 @@ if (matches.length === 0) {
 await page.ai.act(matches[0]);
 ```
 
-## Examples
-
-**Looking for something to copy from?** 
-
-[Here](examples/quickpizza) you can find a couple of examples for our favorite pizza site, QuickPizza 🍕
-
-More examples can be found in [examples](examples/).
-
 ## Caveats
 
-- Don't guess when hydration is done - use `wait()` for that.
-- `wait()`: word conditions around a fact (the URL), not a vague state.
+- Don't guess when hydration is done; use `wait()` for that.
+- Word `wait()` conditions around a concrete fact (e.g., the URL), not a vague state.
 - `maxElements` (150 default) can truncate link-dense pages.
 - Iframe support: one level deep, same-origin only (for visible text too, not just elements).
-- Bot-detection/CAPTCHA walls is a bit flaky.
+- Pages behind bot-detection or CAPTCHA walls can be flaky.
 - No shadow-DOM piercing, multi-tab/popup follow, drag-and-drop, or file upload.
 - `scroll` (via `act()`/`agent()`) scrolls the window by one viewport, not an inner scrollable container.
 - `agent()` reads only the first 4000 characters of visible text, and after each action waits up to 1s for that text to change and settle - an action that changes no text (e.g., checking a box) costs the full wait. If the page text changes while the LLM is deciding, the chosen action is discarded and decided again (once in a row, not counted toward `maxSteps`), at the cost of an extra LLM call.
