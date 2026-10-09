@@ -220,6 +220,12 @@ function collectInteractiveElements(maxElements) {
       if (tag === 'input' && (type === 'checkbox' || type === 'radio')) {
         entry.checked = el.checked;
       }
+      // A long typed value is cut off in `text`; its length keeps further
+      // typing observable (e.g. to tell a repeated keypress that's still
+      // making progress from a stuck one). Never set for password fields.
+      if ((tag === 'textarea' || tag === 'input') && type !== 'password' && el.value && el.value.length > 120) {
+        entry.valueLength = el.value.length;
+      }
 
       results.push(entry);
     }
@@ -275,23 +281,65 @@ function collectInteractiveElements(maxElements) {
 // wholesale - keeping that method's natural line-break handling - while a
 // wrapper far taller than the viewport (<body>, a long <article>) gets
 // recursed into instead of taken as one giant blob.
+//
+// Visible same-origin iframes are read too, one level deep (matching what
+// collectInteractiveElements() can act on), with each frame's text measured
+// against that frame's own viewport and appended after the page's. A
+// cross-origin frame's contentDocument isn't reachable, so it's skipped.
 function collectVisibleText(maxChars) {
   const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE']);
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
 
-  function inViewportRect(rect) {
-    return rect.bottom > 0 && rect.top < vh && rect.right > 0 && rect.left < vw;
+  // `clip` is the part of the document that's actually on screen, in that
+  // document's own coordinates: its whole viewport for the page itself, but
+  // only the part of the frame that overlaps the page's viewport for an
+  // iframe (a frame partly scrolled out of view must not contribute the text
+  // in its clipped-off part).
+  function viewportClip(view) {
+    return { top: 0, left: 0, bottom: view.innerHeight, right: view.innerWidth };
   }
 
-  function reasonablySized(rect) {
-    return rect.height <= vh * 1.5 && rect.width <= vw * 1.5;
+  function inViewportRect(rect, clip) {
+    return rect.bottom > clip.top && rect.top < clip.bottom && rect.right > clip.left && rect.left < clip.right;
   }
 
-  function walk(el) {
-    if (SKIP_TAGS.has(el.tagName)) return [];
+  function insideClip(rect, clip) {
+    return rect.top >= clip.top && rect.bottom <= clip.bottom && rect.left >= clip.left && rect.right <= clip.right;
+  }
+
+  function reasonablySized(rect, view) {
+    return rect.height <= view.innerHeight * 1.5 && rect.width <= view.innerWidth * 1.5;
+  }
+
+  // The text of `el` whose rendered boxes intersect `clip` - for a leaf that
+  // crosses the edge of a partly visible frame, where its whole innerText
+  // would include lines that are scrolled or clipped out of sight. Measured
+  // word by word via Range rects; only used on that rare path.
+  function clippedText(el, clip) {
+    const doc = el.ownerDocument;
+    const walker = doc.createTreeWalker(el, 4 /* NodeFilter.SHOW_TEXT */);
+    let out = '';
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const wordPattern = /\S+\s*/g;
+      let match;
+      while ((match = wordPattern.exec(node.nodeValue))) {
+        const range = doc.createRange();
+        range.setStart(node, match.index);
+        range.setEnd(node, match.index + match[0].trimEnd().length);
+        if (inViewportRect(range.getBoundingClientRect(), clip)) out += match[0];
+      }
+    }
+    return out.replace(/\s+/g, ' ').trim();
+  }
+
+  function isRendered(el) {
     const style = el.ownerDocument.defaultView.getComputedStyle(el);
-    if (style.display === 'none' || style.visibility === 'hidden') return [];
+    return style.display !== 'none' && style.visibility !== 'hidden';
+  }
+
+  function walk(el, clip) {
+    if (SKIP_TAGS.has(el.tagName)) return [];
+    if (!isRendered(el)) return [];
+    const view = el.ownerDocument.defaultView;
 
     const rect = el.getBoundingClientRect();
     // A real box (nonzero size) tells us where the element actually is,
@@ -306,18 +354,51 @@ function collectVisibleText(maxChars) {
     // actual headline text from every read()/waitUntil() call).
     const hasBox = rect.width > 0 || rect.height > 0;
     if (hasBox) {
-      if (!inViewportRect(rect)) return [];
-      if (reasonablySized(rect) || el.children.length === 0) {
+      if (!inViewportRect(rect, clip)) return [];
+      if (clip.partial && el.children.length === 0 && !insideClip(rect, clip)) {
+        const text = clippedText(el, clip);
+        return text ? [text] : [];
+      }
+      // For a partly clipped frame an element that sticks out of the visible
+      // part can't be taken wholesale (its innerText includes the clipped-off
+      // text) - recurse so its children get pruned individually.
+      if ((reasonablySized(rect, view) && (!clip.partial || insideClip(rect, clip))) || el.children.length === 0) {
         const text = (el.innerText || '').trim();
         return text ? [text] : [];
       }
     }
     const parts = [];
-    for (const child of el.children) parts.push(...walk(child));
+    for (const child of el.children) parts.push(...walk(child, clip));
     return parts;
   }
 
-  return walk(document.body).join('\n\n').slice(0, maxChars);
+  const parts = walk(document.body, viewportClip(window));
+  for (const frame of document.querySelectorAll('iframe')) {
+    let innerBody = null;
+    try {
+      innerBody = frame.contentDocument && frame.contentDocument.body;
+    } catch (err) {
+      innerBody = null;
+    }
+    if (!innerBody || !isRendered(frame)) continue;
+    const rect = frame.getBoundingClientRect();
+    if (!(rect.width > 0 || rect.height > 0) || !inViewportRect(rect, viewportClip(window))) continue;
+    // The frame's on-screen part, translated into the frame's own coordinates
+    // (its content box starts inside the border) and bounded by its viewport.
+    const frameView = frame.contentDocument.defaultView;
+    const originX = rect.left + frame.clientLeft;
+    const originY = rect.top + frame.clientTop;
+    const clip = {
+      top: Math.max(0, -originY),
+      left: Math.max(0, -originX),
+      bottom: Math.min(frameView.innerHeight, window.innerHeight - originY),
+      right: Math.min(frameView.innerWidth, window.innerWidth - originX),
+    };
+    clip.partial =
+      clip.top > 0 || clip.left > 0 || clip.bottom < frameView.innerHeight || clip.right < frameView.innerWidth;
+    parts.push(...walk(innerBody, clip));
+  }
+  return parts.join('\n\n').slice(0, maxChars);
 }
 
 export { collectInteractiveElements, collectVisibleText };

@@ -40,7 +40,7 @@ ANTHROPIC_TOKEN=your_token k6 run examples/basic.test.js
 - `page.ai.act(instruction | Step, { secrets?, variables? })` - run one action, or replay a `Step` (e.g. from `observe()`) with no LLM call. Can also resolve to a `scroll` (no element needed) when the instruction needs content revealed that isn't on the page yet.
 - `page.ai.observe(instruction, { variables? })` - matching elements as `Step[]`, ready to pass into `act()`
 - `page.ai.extract(instruction, { schema?, variables? })` - extract structured data
-- `page.ai.agent(goal, { maxSteps?, secrets?, variables?, verifyDone? })` - step until done, scrolling to reveal more content when needed. Independently re-checks the goal against the page's visible text, and feeds that check's own reasoning back in if it disagrees, so a rejected "done" claim isn't just retried blind.
+- `page.ai.agent(goal, { maxSteps?, secrets?, variables?, verifyDone? })` - step until done, scrolling to reveal more content when needed. Each step sees the page's visible text and waits for the page to settle after acting. Independently re-checks the goal against that text, and feeds that check's own reasoning back in if it disagrees, so a rejected "done" claim isn't just retried blind.
   - `maxSteps` (number, default 10); `verifyDone` (boolean, default true) - set `false` to skip the independent re-check.
 - `page.ai.wait(condition, { timeout?, interval?, variables? })` - poll a condition instead of a hardcoded wait
   - `timeout` (ms, default 10000); `interval` (ms, default 500).
@@ -135,10 +135,11 @@ More examples can be found in [examples](examples/).
 - Don't guess when hydration is done - use `wait()` for that.
 - `wait()`: word conditions around a fact (the URL), not a vague state.
 - `maxElements` (150 default) can truncate link-dense pages.
-- Iframe support: one level deep, same-origin only.
+- Iframe support: one level deep, same-origin only (for visible text too, not just elements).
 - Bot-detection/CAPTCHA walls is a bit flaky.
 - No shadow-DOM piercing, multi-tab/popup follow, drag-and-drop, or file upload.
 - `scroll` (via `act()`/`agent()`) scrolls the window by one viewport, not an inner scrollable container.
+- `agent()` reads only the first 4000 characters of visible text, and after each action waits up to 1s for that text to change and settle - an action that changes no text (e.g., checking a box) costs the full wait. If the page text changes while the LLM is deciding, the chosen action is discarded and decided again (once in a row, not counted toward `maxSteps`), at the cost of an extra LLM call.
 
 ## License
 
