@@ -5,6 +5,7 @@ const PROVIDERS = {
   anthropic: {
     label: 'Anthropic',
     defaultModel: 'claude-sonnet-5',
+    defaultMaxTokens: 1024,
     // Accepted names, checked in order, across both -e/--env flags and a
     // project-root .env file (see env.js).
     apiKeyNames: ['ANTHROPIC_API_KEY', 'ANTHROPIC_TOKEN'],
@@ -12,6 +13,9 @@ const PROVIDERS = {
   openai: {
     label: 'OpenAI',
     defaultModel: 'gpt-4.1',
+    // Reasoning models (o-series, gpt-5) count hidden reasoning against this
+    // budget, so leave headroom beyond the visible JSON reply.
+    defaultMaxTokens: 4096,
     apiKeyNames: ['OPENAI_API_KEY'],
   },
 };
@@ -47,8 +51,9 @@ function resolveProvider(options) {
 // works fine inside async functions.
 export function createLLMClient(options = {}) {
   const provider = resolveProvider(options);
-  const { label, defaultModel, apiKeyNames } = PROVIDERS[provider];
+  const { label, defaultModel, defaultMaxTokens, apiKeyNames } = PROVIDERS[provider];
   const model = options.model || readEnv('BROWSER_AI_MODEL') || defaultModel;
+  const maxTokens = options.maxTokens || defaultMaxTokens;
   const apiKey = options.apiKey || readEnv(...apiKeyNames);
   // Anthropic's own safety classifier occasionally refuses a request that
   // has nothing objectionable in it - e.g., a page snapshot that happens to
@@ -83,7 +88,7 @@ export function createLLMClient(options = {}) {
       'https://api.anthropic.com/v1/messages',
       JSON.stringify({
         model: useModel,
-        max_tokens: 1024,
+        max_tokens: maxTokens,
         system: systemPrompt,
         messages: [{ role: 'user', content: userPrompt }],
       }),
@@ -112,7 +117,7 @@ export function createLLMClient(options = {}) {
       'https://api.openai.com/v1/chat/completions',
       JSON.stringify({
         model: useModel,
-        max_completion_tokens: 1024,
+        max_completion_tokens: maxTokens,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },

@@ -14,7 +14,7 @@ import { browser } from "https://jslib.k6.io/k6-browser-ai/0.1.0/index.js";
 ### Requirements
 
 - k6 v2.0.0+
-- An Anthropic API key (`ANTHROPIC_API_KEY` or `ANTHROPIC_TOKEN`) or an OpenAI API key (`OPENAI_API_KEY`), provided as an environment variable. *If both are set, Anthropic is used unless you pick a provider with `BROWSER_AI_PROVIDER` or `llmOptions.provider`.*
+- An Anthropic API key (`ANTHROPIC_API_KEY` or `ANTHROPIC_TOKEN`) or an OpenAI API key (`OPENAI_API_KEY`), provided as an environment variable. *If both are set, Anthropic is used unless you pick a provider with `BROWSER_AI_PROVIDER` or `llmOptions.provider`, or the model name implies one (e.g. `BROWSER_AI_MODEL=gpt-4.1` selects OpenAI).*
 
 > **Note:** Each AI call sends some combination of the page's interactive elements, visible text, form-control state,
 > and current URL to the configured LLM, depending on the method. Replaying a `Step` through `act()` makes no LLM call,
@@ -202,8 +202,9 @@ Passed to `browserAI(page, options)` or `browser.newPage(options)`:
 - `llm` (object, optional) - your own client instead of the default Anthropic/OpenAI one. Must implement `.complete(systemPrompt: string, userPrompt: string): string`, called synchronously (not awaited).
 - `llmOptions` (object, optional) - options for the *default* client, ignored if you pass your own `llm`:
   - `provider` (`'anthropic'` | `'openai'`) - defaults to the `BROWSER_AI_PROVIDER` env var, otherwise inferred from the model name (`gpt-*`/`o1`/`o3`… → OpenAI, `claude-*` → Anthropic), otherwise whichever provider has an API key set (Anthropic first). To force OpenAI when both keys are set: `-e BROWSER_AI_PROVIDER=openai`.
-  - `apiKey` (string) - defaults to the provider's env var (`ANTHROPIC_API_KEY`/`ANTHROPIC_TOKEN`, or `OPENAI_API_KEY`) or a `.env` file. Passing `apiKey` without a `provider` assumes Anthropic.
+  - `apiKey` (string) - defaults to the provider's env var (`ANTHROPIC_API_KEY`/`ANTHROPIC_TOKEN`, or `OPENAI_API_KEY`) or a `.env` file. Passing `apiKey` without a `provider` uses the provider implied by the model name (e.g. `gpt-4.1` → OpenAI), otherwise Anthropic, so check where your key is sent.
   - `model` (string) - defaults to the `BROWSER_AI_MODEL` env var or the provider's own default model (`claude-sonnet-5` for Anthropic, `gpt-4.1` for OpenAI). `BROWSER_AI_MODEL` is not per-provider, so only set it to a model that matches the provider in use.
+  - `maxTokens` (number) - max tokens the model may generate per call, including hidden reasoning on OpenAI reasoning models. Defaults to 1024 for Anthropic and 4096 for OpenAI; raise it if you get an empty-response error.
   - `fallbackModel` (string) - Anthropic's safety classifier occasionally refuses a request that has nothing objectionable in it. On a refusal, the library retries once with this model. Defaults to the library's baseline Anthropic model; with OpenAI it is only used if you set it.
 - `maxElements` (number, default 150) - cap on interactive elements collected per snapshot; can truncate link-dense pages.
 - `actionTimeout` (ms, default 8000) - per-action timeout, passed to k6/browser's own Locator actions (click/fill/check/...).
