@@ -14,10 +14,10 @@ import { browser } from "https://jslib.k6.io/k6-browser-ai/0.1.0/index.js";
 ### Requirements
 
 - k6 v2.0.0+
-- An Anthropic API key, provided as the `ANTHROPIC_API_KEY` (or `ANTHROPIC_TOKEN`) environment variable.
+- An Anthropic API key (`ANTHROPIC_API_KEY` or `ANTHROPIC_TOKEN`) or an OpenAI API key (`OPENAI_API_KEY`), provided as an environment variable. *If both are set, Anthropic is used unless you pick a provider with `BROWSER_AI_PROVIDER` or `llmOptions.provider`.*
 
 > **Note:** Each AI call sends some combination of the page's interactive elements, visible text, form-control state,
-> and current URL to the configured LLM, depending on the method. Replaying a `Step` through `act()` makes no LLM call, 
+> and current URL to the configured LLM, depending on the method. Replaying a `Step` through `act()` makes no LLM call,
 > so it sends nothing. Don't use AI calls on pages that show data you aren't comfortable sharing with the LLM provider.
 
 ## Quick Start
@@ -77,6 +77,8 @@ Run it with your API key:
 
 ```sh
 ANTHROPIC_API_KEY=your_key k6 run script.js
+# or, with OpenAI:
+OPENAI_API_KEY=your_key k6 run script.js
 ```
 
 ## Features
@@ -140,6 +142,8 @@ Runnable examples live in `examples/`:
 
 ```
 ANTHROPIC_API_KEY=your_key k6 run examples/basic.test.js
+# or, with OpenAI:
+OPENAI_API_KEY=your_key k6 run examples/basic.test.js
 ```
 
 [Here](examples/quickpizza) you can find a couple of examples for our favorite pizza site, QuickPizza 🍕
@@ -195,11 +199,12 @@ await page.ai.act('type {{password}} into the password field', { secrets: { pass
 
 Passed to `browserAI(page, options)` or `browser.newPage(options)`:
 
-- `llm` (object, optional) - your own client instead of the default Anthropic one. Must implement `.complete(systemPrompt: string, userPrompt: string): string`, called synchronously (not awaited).
+- `llm` (object, optional) - your own client instead of the default Anthropic/OpenAI one. Must implement `.complete(systemPrompt: string, userPrompt: string): string`, called synchronously (not awaited).
 - `llmOptions` (object, optional) - options for the *default* client, ignored if you pass your own `llm`:
-  - `apiKey` (string) - defaults to the `ANTHROPIC_API_KEY`/`ANTHROPIC_TOKEN` env var or a `.env` file.
-  - `model` (string) - defaults to the `BROWSER_AI_MODEL` env var or the library's own default model.
-  - `fallbackModel` (string) - Anthropic's safety classifier occasionally refuses a request that has nothing objectionable in it. On a refusal, the library retries once with this model.
+  - `provider` (`'anthropic'` | `'openai'`) - defaults to the `BROWSER_AI_PROVIDER` env var, otherwise inferred from the model name (`gpt-*`/`o1`/`o3`… → OpenAI, `claude-*` → Anthropic), otherwise whichever provider has an API key set (Anthropic first). To force OpenAI when both keys are set: `-e BROWSER_AI_PROVIDER=openai`.
+  - `apiKey` (string) - defaults to the provider's env var (`ANTHROPIC_API_KEY`/`ANTHROPIC_TOKEN`, or `OPENAI_API_KEY`) or a `.env` file. Passing `apiKey` without a `provider` assumes Anthropic.
+  - `model` (string) - defaults to the `BROWSER_AI_MODEL` env var or the provider's own default model (`claude-sonnet-5` for Anthropic, `gpt-4.1` for OpenAI). `BROWSER_AI_MODEL` is not per-provider, so only set it to a model that matches the provider in use.
+  - `fallbackModel` (string) - Anthropic's safety classifier occasionally refuses a request that has nothing objectionable in it. On a refusal, the library retries once with this model. Defaults to the library's baseline Anthropic model; with OpenAI it is only used if you set it.
 - `maxElements` (number, default 150) - cap on interactive elements collected per snapshot; can truncate link-dense pages.
 - `actionTimeout` (ms, default 8000) - per-action timeout, passed to k6/browser's own Locator actions (click/fill/check/...).
 - `context` (boolean, default false) - feeds a rolling log of past `act()`/`agent()` decisions into every future decision, to help it reason (e.g. "the other checkbox") - never to skip a call.
