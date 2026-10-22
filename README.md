@@ -134,6 +134,12 @@ Check a condition once. It throws if the condition isn't met.
 await page.ai.assert('the order confirmation is showing');
 ```
 
+`assert.not` is the inverse: it throws if the condition *is* met.
+
+```javascript
+await page.ai.assert.not('an error banner is showing');
+```
+
 ## Examples
 
 Runnable examples live in `examples/`:
@@ -156,6 +162,7 @@ ANTHROPIC_API_KEY=your_key k6 run examples/basic.test.js
 - `page.ai.wait(condition, { timeout?, interval?, variables? })` - poll a condition instead of a hardcoded wait
   - `timeout` (ms, default 10000); `interval` (ms, default 500).
 - `page.ai.assert(assertion, { variables? })` - check a condition once; throws if it isn't currently met
+- `page.ai.assert.not(assertion, { variables? })` - the inverse of `assert`; throws if the condition is currently met
 
 ### Types
 
