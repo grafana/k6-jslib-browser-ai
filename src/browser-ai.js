@@ -636,10 +636,12 @@ export function browserAI(page, options = {}) {
     );
   }
 
-  // Like assert(), but graded and non-throwing: returns the verdict with a
-  // 0-1 confidence so the caller decides what to do with an ambiguous
-  // answer (feed a metric, gate on it, ...). The confidence is the model's
-  // own estimate, not a calibrated probability.
+  // Like assert(), but graded: an unmet condition doesn't throw, it returns
+  // the verdict with a 0-1 confidence so the caller decides what to do with
+  // an ambiguous answer (feed a metric, gate on it, ...). The confidence is
+  // the model's own estimate, not a calibrated probability. Browser and LLM
+  // failures (bad JSON, client errors) still throw, so they can't pass as a
+  // verdict.
   async function judge(question, judgeOpts = {}) {
     const resolvedQuestion = substitutePlaceholders(question, judgeOpts.variables);
     const text = await evaluateStable(collectVisibleText, 4000);
@@ -648,8 +650,8 @@ export function browserAI(page, options = {}) {
       `Question: ${resolvedQuestion}\n\nCurrent URL: ${page.url()}\n\nPage text:\n${text}`
     );
     const met = !!(decision && decision.met);
-    const raw = decision && Number(decision.confidence);
-    const confidence = Number.isFinite(raw) ? Math.min(1, Math.max(0, raw)) : met ? 1 : 0;
+    const raw = decision && decision.confidence;
+    const confidence = typeof raw === 'number' && Number.isFinite(raw) ? Math.min(1, Math.max(0, raw)) : met ? 1 : 0;
     return { met, confidence, reason: (decision && decision.reason) || '' };
   }
 

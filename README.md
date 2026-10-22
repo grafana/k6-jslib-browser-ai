@@ -136,7 +136,7 @@ await page.ai.assert('the order confirmation is showing');
 
 ### 7. Judge conditions
 
-Like `assert`, but it never throws and returns a confidence, for answers that aren't clear-cut.
+Like `assert`, but an unmet condition doesn't throw and it returns a confidence, for answers that aren't clear-cut.
 
 ```javascript
 const { met, confidence, reason } = await page.ai.judge('the page looks broken');
@@ -165,7 +165,7 @@ ANTHROPIC_API_KEY=your_key k6 run examples/basic.test.js
 - `page.ai.wait(condition, { timeout?, interval?, variables? })` - poll a condition instead of a hardcoded wait
   - `timeout` (ms, default 10000); `interval` (ms, default 500).
 - `page.ai.assert(assertion, { variables? })` - check a condition once; throws if it isn't currently met
-- `page.ai.judge(question, { variables? })` - check a condition once and return `{ met, confidence, reason }`; never throws
+- `page.ai.judge(question, { variables? })` - check a condition once and return `{ met, confidence, reason }`; doesn't throw when the condition is unmet (browser or model errors still throw)
   - `confidence` is 0-1 and is the model's own estimate, not a calibrated probability. It only sees the page's visible text, not a screenshot.
 
 ### Types
