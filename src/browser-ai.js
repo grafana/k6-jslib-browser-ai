@@ -625,6 +625,18 @@ export function browserAI(page, options = {}) {
     );
   }
 
+  // The inverse of assert(): passes when the condition is *not* met, so a
+  // negative check ("no error banner is showing") doesn't have to be
+  // phrased as a double negative for the model to judge.
+  assert.not = async function assertNot(assertion, assertOpts = {}) {
+    const resolvedAssertion = substitutePlaceholders(assertion, assertOpts.variables);
+    const { met, reason } = await checkCondition(resolvedAssertion);
+    if (!met) return;
+    throw new Error(
+      `browser-ai: assertion failed: expected NOT "${resolvedAssertion}" - ${reason || 'condition was met'}`
+    );
+  };
+
   async function checkCondition(condition) {
     const text = await evaluateStable(collectVisibleText, 4000);
     const decision = askLlm(
