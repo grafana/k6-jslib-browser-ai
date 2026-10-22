@@ -134,6 +134,15 @@ Check a condition once. It throws if the condition isn't met.
 await page.ai.assert('the order confirmation is showing');
 ```
 
+### 7. Judge conditions
+
+Like `assert`, but it never throws and returns a confidence, for answers that aren't clear-cut.
+
+```javascript
+const { met, confidence, reason } = await page.ai.judge('the page looks broken');
+// e.g. { met: true, confidence: 0.7, reason: 'the product images are missing' }
+```
+
 ## Examples
 
 Runnable examples live in `examples/`:
@@ -156,6 +165,8 @@ ANTHROPIC_API_KEY=your_key k6 run examples/basic.test.js
 - `page.ai.wait(condition, { timeout?, interval?, variables? })` - poll a condition instead of a hardcoded wait
   - `timeout` (ms, default 10000); `interval` (ms, default 500).
 - `page.ai.assert(assertion, { variables? })` - check a condition once; throws if it isn't currently met
+- `page.ai.judge(question, { variables? })` - check a condition once and return `{ met, confidence, reason }`; never throws
+  - `confidence` is 0-1 and is the model's own estimate, not a calibrated probability. It only sees the page's visible text, not a screenshot.
 
 ### Types
 
@@ -170,7 +181,7 @@ These are referenced above and in the examples below, rather than spelled out on
 
 `{{name}}` placeholders are resolved as follows:
 - `secrets` (`act()` with a string instruction, and `agent()`) - kept as placeholders in the instruction/goal; substituted only into the chosen action's `value` immediately before execution.
-- `variables` (all six AI methods) - visible to the LLM; substituted into the instruction/goal/condition/assertion before the LLM call.
+- `variables` (all seven AI methods) - visible to the LLM; substituted into the instruction/goal/condition/assertion before the LLM call.
 
 Variables, for anything safe to show the model:
 
