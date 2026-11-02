@@ -203,11 +203,31 @@ Passed to `browserAI(page, options)` or `browser.newPage(options)`:
 - `maxElements` (number, default 150) - cap on interactive elements collected per snapshot; can truncate link-dense pages.
 - `actionTimeout` (ms, default 8000) - per-action timeout, passed to k6/browser's own Locator actions (click/fill/check/...).
 - `context` (boolean, default false) - feeds a rolling log of past `act()`/`agent()` decisions into every future decision, to help it reason (e.g. "the other checkbox") - never to skip a call.
+- `report` (`'off'` | `'json'` | function, default `'off'`) - reports how each `page.ai` call went (`agent()` counts as one), so you can build a run summary. `'json'` logs one `browser-ai:step {json}` line per call; pass a function to receive each event yourself. See [Step reports](#step-reports).
 
 ### Diagnostic logging
 
 Diagnostic logging (the LLM prompt/raw response) goes through `console.debug()`, so it's silent by default - run
 `k6 run --verbose your_script.js` (or `--log-level debug`) to see it, same as any other k6 module.
+
+### Step reports
+
+Set `report: 'json'` and each `page.ai` call logs a line like this when it finishes:
+
+```
+browser-ai:step {"index":0,"type":"act","instruction":"click the login button","status":"passed","durationMs":1840}
+```
+
+`status` is `'passed'` or `'failed'` (with the first line of the error in `error`). 
+An `agent()` that returns `done: false` is reported as failed.
+
+Or pass a function to handle the events yourself:
+
+```javascript
+const page = await browser.newPage({
+  report: (event) => console.log(`${event.status === 'passed' ? '✓' : '✗'} ${event.type}: ${event.instruction}`),
+});
+```
 
 ### When `act()` can't find a match
 

@@ -110,6 +110,21 @@ function recordContext(entry) {
   if (sharedContext.length > CONTEXT_LIMIT) sharedContext.shift();
 }
 
+const REPORT_ERROR_MAX_LENGTH = 300;
+
+function firstLine(message) {
+  return String(message).split('\n')[0].slice(0, REPORT_ERROR_MAX_LENGTH);
+}
+
+// `report` is 'off' (default), 'json' (one `browser-ai:step {json}` console
+// line per page.ai call), or a function that receives the event instead.
+function resolveReporter(report = 'off') {
+  if (report === 'off' || report === false) return null;
+  if (typeof report === 'function') return report;
+  if (report === 'json') return (event) => console.log('browser-ai:step ' + JSON.stringify(event));
+  throw new Error(`browser-ai: options.report must be 'json', 'off' or a function, got ${JSON.stringify(report)}`);
+}
+
 /**
  * Wraps a k6 browser `page` with a small `.ai` namespace (act / observe /
  * extract / agent / wait / assert) backed by an LLM, while every native
@@ -129,6 +144,7 @@ export function browserAI(page, options = {}) {
   const maxElements = options.maxElements || DEFAULT_MAX_ELEMENTS;
   const actionTimeout = options.actionTimeout || DEFAULT_ACTION_TIMEOUT_MS;
   const contextEnabled = !!options.context;
+  const report = resolveReporter(options.report);
 
   function getLlm() {
     if (!llm) llm = createLLMClient(options.llmOptions || {});
@@ -854,7 +870,50 @@ export function browserAI(page, options = {}) {
     return { done: false, reason: 'max steps reached', steps: history };
   }
 
-  const ai = { act, observe, extract, agent, wait, assert };
+  let stepIndex = 0;
+
+  // Reports one entry per page.ai call (agent() included, as a single entry).
+  // Only the public `ai` surface is wrapped, so the library's own internal
+  // calls between these functions never report twice.
+  function reported(type, fn) {
+    return async (instruction, ...rest) => {
+      if (!report) return fn(instruction, ...rest);
+      const index = stepIndex++;
+      const startedAt = Date.now();
+      const emit = (status, error) =>
+        report({
+          index,
+          type,
+          instruction: typeof instruction === 'string' ? instruction : undefined,
+          status,
+          durationMs: Date.now() - startedAt,
+          error,
+        });
+      let result;
+      try {
+        result = await fn(instruction, ...rest);
+      } catch (e) {
+        emit('failed', firstLine((e && e.message) || e));
+        throw e;
+      }
+      // agent() doesn't throw when it gives up, it returns done: false.
+      if (type === 'agent' && result && result.done === false) {
+        emit('failed', firstLine(`agent() didn't finish after ${result.steps.length} steps: ${result.reason}`));
+      } else {
+        emit('passed');
+      }
+      return result;
+    };
+  }
+
+  const ai = {
+    act: reported('act', act),
+    observe: reported('observe', observe),
+    extract: reported('extract', extract),
+    agent: reported('agent', agent),
+    wait: reported('wait', wait),
+    assert: reported('assert', assert),
+  };
 
   return new Proxy(page, {
     get(target, prop, receiver) {
@@ -869,7 +928,7 @@ export function browserAI(page, options = {}) {
 // browser.newPage() accepts k6's own page options (viewport, ...) and
 // this library's (llm, maxElements, ...) in the same object - split them
 // apart here rather than asking for two separate arguments.
-const AI_OPTION_KEYS = ['llm', 'llmOptions', 'maxElements', 'actionTimeout', 'context'];
+const AI_OPTION_KEYS = ['llm', 'llmOptions', 'maxElements', 'actionTimeout', 'context', 'report'];
 
 function splitAIOptions(options = {}) {
   const aiOptions = {};
