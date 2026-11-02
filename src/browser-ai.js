@@ -113,7 +113,15 @@ function recordContext(entry) {
 const REPORT_ERROR_MAX_LENGTH = 300;
 
 function firstLine(message) {
-  return String(message).split('\n')[0].slice(0, REPORT_ERROR_MAX_LENGTH);
+  // String() throws for values with no string conversion (e.g.
+  // Object.create(null)); reporting must never change a call's outcome.
+  let text;
+  try {
+    text = String(message);
+  } catch {
+    text = '[unprintable error]';
+  }
+  return text.split('\n')[0].slice(0, REPORT_ERROR_MAX_LENGTH);
 }
 
 // `report` is 'off' (default), 'json' (one `browser-ai:step {json}` console
