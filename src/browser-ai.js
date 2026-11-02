@@ -880,27 +880,35 @@ export function browserAI(page, options = {}) {
       if (!report) return fn(instruction, ...rest);
       const index = stepIndex++;
       const startedAt = Date.now();
-      const emit = (status, error) =>
-        report({
-          index,
-          type,
-          instruction: typeof instruction === 'string' ? instruction : undefined,
-          status,
-          durationMs: Date.now() - startedAt,
-          error,
-        });
+      // A broken reporter must never change the outcome of the call it
+      // reports on: swallow its errors (sync or async) and wait for it so
+      // reporting is done before the call settles.
+      const emit = async (status, error) => {
+        try {
+          await report({
+            index,
+            type,
+            instruction: typeof instruction === 'string' ? instruction : undefined,
+            status,
+            durationMs: Date.now() - startedAt,
+            error,
+          });
+        } catch (reportError) {
+          console.warn(`browser-ai: report callback threw: ${firstLine((reportError && reportError.message) || reportError)}`);
+        }
+      };
       let result;
       try {
         result = await fn(instruction, ...rest);
       } catch (e) {
-        emit('failed', firstLine((e && e.message) || e));
+        await emit('failed', firstLine((e && e.message) || e));
         throw e;
       }
       // agent() doesn't throw when it gives up, it returns done: false.
       if (type === 'agent' && result && result.done === false) {
-        emit('failed', firstLine(`agent() didn't finish after ${result.steps.length} steps: ${result.reason}`));
+        await emit('failed', firstLine(`agent() didn't finish after ${result.steps.length} steps: ${result.reason}`));
       } else {
-        emit('passed');
+        await emit('passed');
       }
       return result;
     };
@@ -954,6 +962,8 @@ function wrapBrowserLike(target, contextAIOptions = {}) {
         return async (options) => {
           const { aiOptions, nativeOptions } = splitAIOptions(options);
           const hasNative = Object.keys(nativeOptions).length > 0;
+          // Validate before allocating the native page so a bad option can't leak it.
+          resolveReporter({ ...contextAIOptions, ...aiOptions }.report);
           const page = await (hasNative ? obj.newPage(nativeOptions) : obj.newPage());
           return browserAI(page, { ...contextAIOptions, ...aiOptions });
         };
@@ -962,6 +972,7 @@ function wrapBrowserLike(target, contextAIOptions = {}) {
         return async (options) => {
           const { aiOptions, nativeOptions } = splitAIOptions(options);
           const hasNative = Object.keys(nativeOptions).length > 0;
+          resolveReporter({ ...contextAIOptions, ...aiOptions }.report);
           const context = await (hasNative ? obj.newContext(nativeOptions) : obj.newContext());
           return wrapBrowserLike(context, { ...contextAIOptions, ...aiOptions });
         };
