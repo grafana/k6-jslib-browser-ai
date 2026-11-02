@@ -112,12 +112,16 @@ function recordContext(entry) {
 
 const REPORT_ERROR_MAX_LENGTH = 300;
 
-function firstLine(message) {
-  // String() throws for values with no string conversion (e.g.
-  // Object.create(null)); reporting must never change a call's outcome.
+// Turns whatever was thrown into a short single-line string for reports.
+// Reading .message or converting to a string can itself throw (getters,
+// Object.create(null)), and reporting must never change a call's outcome,
+// so every access is guarded. An error may carry a `reportMessage` that is
+// safe to log (e.g. one without page-derived data) which wins over .message.
+function firstLine(err) {
   let text;
   try {
-    text = String(message);
+    const safe = err && err.reportMessage;
+    text = String(typeof safe === 'string' ? safe : (err && err.message) || err);
   } catch {
     text = '[unprintable error]';
   }
@@ -902,14 +906,14 @@ export function browserAI(page, options = {}) {
             error,
           });
         } catch (reportError) {
-          console.warn(`browser-ai: report callback threw: ${firstLine((reportError && reportError.message) || reportError)}`);
+          console.warn(`browser-ai: report callback threw: ${firstLine(reportError)}`);
         }
       };
       let result;
       try {
         result = await fn(instruction, ...rest);
       } catch (e) {
-        await emit('failed', firstLine((e && e.message) || e));
+        await emit('failed', firstLine(e));
         throw e;
       }
       // agent() doesn't throw when it gives up, it returns done: false.
@@ -1021,7 +1025,11 @@ function parseJSON(raw) {
   try {
     return JSON.parse(cleaned);
   } catch (err) {
-    throw new Error(`browser-ai: failed to parse LLM response as JSON: ${cleaned}`);
+    const error = new Error(`browser-ai: failed to parse LLM response as JSON: ${cleaned}`);
+    // The response can hold page-derived data (extract()), so reports get
+    // a message without it; the thrown error itself is unchanged.
+    error.reportMessage = 'browser-ai: failed to parse LLM response as JSON';
+    throw error;
   }
 }
 
