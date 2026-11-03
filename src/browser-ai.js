@@ -657,7 +657,7 @@ export function browserAI(page, options = {}) {
     const met = decision.met;
     const raw = decision.confidence;
     const confidence = typeof raw === 'number' && Number.isFinite(raw) ? Math.min(1, Math.max(0, raw)) : met ? 1 : 0;
-    return { met, confidence, reason: decision.reason || '' };
+    return { met, confidence, reason: typeof decision.reason === 'string' ? decision.reason : '' };
   }
 
   // The inverse of assert(): passes when the condition is *not* met, so a
