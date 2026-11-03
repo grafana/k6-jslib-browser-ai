@@ -1,6 +1,5 @@
 import { check } from 'k6';
 import { browser } from '../../src/browser-ai.js';
-import { readEnv } from '../../src/env.js';
 
 export const options = {
   scenarios: { ui: { executor: 'shared-iterations', options: { browser: { type: 'chromium' } } } },
@@ -12,15 +11,15 @@ export default async function () {
   let ok = false;
 
   try {
-    await page.goto(`${readEnv('GHOST_URL')}/ghost/`, { waitUntil: 'networkidle' });
+    await page.goto(`${__ENV.GHOST_URL}/ghost/`, { waitUntil: 'networkidle' });
 
     // {{email}}/{{password}} are placeholders - the LLM only ever sees
-    // these tokens, never the real credentials from .env.
+    // these tokens, never the real credentials from the environment.
     await page.ai.act('type {{email}} into the email address field', {
-      secrets: { email: readEnv('ADMIN_EMAIL') },
+      secrets: { email: __ENV.ADMIN_EMAIL },
     });
     await page.ai.act('type {{password}} into the password field', {
-      secrets: { password: readEnv('GHOST_ADMIN_PASSWORD') },
+      secrets: { password: __ENV.GHOST_ADMIN_PASSWORD },
     });
     await page.ai.act('click the sign in button');
 

@@ -1,11 +1,18 @@
 import http from 'k6/http';
-import { readEnv } from './env.js';
 
 const DEFAULT_MODEL = 'claude-sonnet-5';
 
-// Accepted names, checked in order, across both -e/--env flags and a
-// project-root .env file (see env.js).
+// Accepted names, checked in order, in k6's environment (-e/--env flags or
+// real environment variables, both exposed as __ENV).
 const API_KEY_NAMES = ['ANTHROPIC_API_KEY', 'ANTHROPIC_TOKEN'];
+
+// First non-empty value among the candidate names, in order.
+function readEnv(...names) {
+  for (const name of names) {
+    if (__ENV[name]) return __ENV[name];
+  }
+  return undefined;
+}
 
 // Minimal Anthropic client: sends a system+user prompt, returns the raw
 // text response. No npm dependency - everything goes over k6/http, which
@@ -30,7 +37,7 @@ export function createLLMClient(options = {}) {
   if (!apiKey) {
     throw new Error(
       `browser-ai: missing API key. Set one of ${API_KEY_NAMES.join(', ')} ` +
-        '(via -e, or a .env file at the project root) or pass { llmOptions: { apiKey } }.'
+        '(via -e or an environment variable) or pass { llmOptions: { apiKey } }.'
     );
   }
 

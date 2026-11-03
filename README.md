@@ -182,7 +182,7 @@ await page.ai.act('search for {{query}}', { variables: { query: 'load testing to
 non-password field values or visible text containing a secret can still be sent to the LLM (password fields are masked).
 This option takes an already-resolved string, however you got it, so it works directly with
 [`k6/secrets`](https://grafana.com/docs/k6/latest/javascript-api/k6-secrets/)
-(or `__ENV`, a `.env` file, anything else):
+(or `__ENV`, anything else):
 
 ```js
 import secrets from 'k6/secrets';
@@ -197,7 +197,7 @@ Passed to `browserAI(page, options)` or `browser.newPage(options)`:
 
 - `llm` (object, optional) - your own client instead of the default Anthropic one. Must implement `.complete(systemPrompt: string, userPrompt: string): string`, called synchronously (not awaited).
 - `llmOptions` (object, optional) - options for the *default* client, ignored if you pass your own `llm`:
-  - `apiKey` (string) - defaults to the `ANTHROPIC_API_KEY`/`ANTHROPIC_TOKEN` env var or a `.env` file.
+  - `apiKey` (string) - defaults to the `ANTHROPIC_API_KEY`/`ANTHROPIC_TOKEN` env var (`-e` or exported).
   - `model` (string) - defaults to the `BROWSER_AI_MODEL` env var or the library's own default model.
   - `fallbackModel` (string) - Anthropic's safety classifier occasionally refuses a request that has nothing objectionable in it. On a refusal, the library retries once with this model.
 - `maxElements` (number, default 150) - cap on interactive elements collected per snapshot; can truncate link-dense pages.
