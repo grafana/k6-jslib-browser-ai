@@ -147,8 +147,8 @@ await page.ai.assert.not('an error banner is showing');
 Like `assert`, but an unmet condition doesn't throw and it returns a confidence, for answers that aren't clear-cut.
 
 ```javascript
-const { met, confidence, reason } = await page.ai.judge('the page looks broken');
-// e.g. { met: true, confidence: 0.7, reason: 'the product images are missing' }
+const { met, confidence, reason } = await page.ai.judge('the checkout page shows an error message');
+// e.g. { met: true, confidence: 0.7, reason: 'the page says "Something went wrong"' }
 ```
 
 ## Examples
