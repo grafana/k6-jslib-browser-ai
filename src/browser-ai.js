@@ -656,7 +656,12 @@ export function browserAI(page, options = {}) {
     }
     const met = decision.met;
     const raw = decision.confidence;
-    const confidence = typeof raw === 'number' && Number.isFinite(raw) ? Math.min(1, Math.max(0, raw)) : met ? 1 : 0;
+    // Same reasoning for confidence: a made-up score would be indistinguishable
+    // from a real one, and a fallback can't mean the same thing for met and !met.
+    if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+      throw new Error(`browser-ai: judge could not evaluate "${resolvedQuestion}": the model returned no numeric "confidence"`);
+    }
+    const confidence = Math.min(1, Math.max(0, raw));
     return { met, confidence, reason: typeof decision.reason === 'string' ? decision.reason : '' };
   }
 
