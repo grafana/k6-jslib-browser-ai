@@ -1,6 +1,5 @@
 import { check } from 'k6';
 import { browser } from '../../src/browser-ai.js';
-import { readEnv } from '../../src/env.js';
 
 export const options = {
   scenarios: { ui: { executor: 'shared-iterations', options: { browser: { type: 'chromium' } } } },
@@ -12,12 +11,12 @@ export default async function () {
   let ok = false;
 
   try {
-    await page.goto(`${readEnv('GRAFANA_URL')}/login`, { waitUntil: 'networkidle' });
+    await page.goto(`${__ENV.GRAFANA_URL}/login`, { waitUntil: 'networkidle' });
 
     // {{user}}/{{password}} are placeholders - the LLM only ever sees these
-    // tokens, never the real credentials from .env.
-    await page.ai.act('type {{user}} into the username field', { secrets: { user: readEnv('ADMIN_USER') } });
-    await page.ai.act('type {{password}} into the password field', { secrets: { password: readEnv('ADMIN_PASSWORD') } });
+    // tokens, never the real credentials from the environment.
+    await page.ai.act('type {{user}} into the username field', { secrets: { user: __ENV.ADMIN_USER } });
+    await page.ai.act('type {{password}} into the password field', { secrets: { password: __ENV.ADMIN_PASSWORD } });
     await page.ai.act('click the log in button');
 
     // A concrete fact (the URL) is a more reliable wait() condition

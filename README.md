@@ -14,10 +14,10 @@ import { browser } from "https://jslib.k6.io/k6-browser-ai/0.1.0/index.js";
 ### Requirements
 
 - k6 v2.0.0+
-- An Anthropic API key, provided as the `ANTHROPIC_API_KEY` (or `ANTHROPIC_TOKEN`) environment variable.
+- An Anthropic API key (`ANTHROPIC_API_KEY` or `ANTHROPIC_TOKEN`) or an OpenAI API key (`OPENAI_API_KEY`), provided as an environment variable. *If both are set, Anthropic is used unless you pick a provider with `BROWSER_AI_PROVIDER` or `llmOptions.provider`, or the model name implies one (e.g. `BROWSER_AI_MODEL=gpt-4.1` selects OpenAI).*
 
 > **Note:** Each AI call sends some combination of the page's interactive elements, visible text, form-control state,
-> and current URL to the configured LLM, depending on the method. Replaying a `Step` through `act()` makes no LLM call, 
+> and current URL to the configured LLM, depending on the method. Replaying a `Step` through `act()` makes no LLM call,
 > so it sends nothing. Don't use AI calls on pages that show data you aren't comfortable sharing with the LLM provider.
 
 ## Quick Start
@@ -77,6 +77,8 @@ Run it with your API key:
 
 ```sh
 ANTHROPIC_API_KEY=your_key k6 run script.js
+# or, with OpenAI:
+OPENAI_API_KEY=your_key k6 run script.js
 ```
 
 ## Features
@@ -134,6 +136,12 @@ Check a condition once. It throws if the condition isn't met.
 await page.ai.assert('the order confirmation is showing');
 ```
 
+`assert.not` is the inverse: it throws if the condition *is* met.
+
+```javascript
+await page.ai.assert.not('an error banner is showing');
+```
+
 ### 7. Judge conditions
 
 Like `assert`, but an unmet condition doesn't throw and it returns a confidence, for answers that aren't clear-cut.
@@ -149,6 +157,8 @@ Runnable examples live in `examples/`:
 
 ```
 ANTHROPIC_API_KEY=your_key k6 run examples/basic.test.js
+# or, with OpenAI:
+OPENAI_API_KEY=your_key k6 run examples/basic.test.js
 ```
 
 [Here](examples/quickpizza) you can find a couple of examples for our favorite pizza site, QuickPizza 🍕
@@ -165,6 +175,7 @@ ANTHROPIC_API_KEY=your_key k6 run examples/basic.test.js
 - `page.ai.wait(condition, { timeout?, interval?, variables? })` - poll a condition instead of a hardcoded wait
   - `timeout` (ms, default 10000); `interval` (ms, default 500).
 - `page.ai.assert(assertion, { variables? })` - check a condition once; throws if it isn't currently met
+- `page.ai.assert.not(assertion, { variables? })` - the inverse of `assert`; throws if the condition is currently met
 - `page.ai.judge(question, { variables? })` - check a condition once and return `{ met, confidence, reason }`; doesn't throw when the condition is unmet (browser or model errors still throw)
   - `confidence` is 0-1 and is the model's own estimate, not a calibrated probability. It only sees the page's visible text, not a screenshot.
 
@@ -193,7 +204,7 @@ await page.ai.act('search for {{query}}', { variables: { query: 'load testing to
 non-password field values or visible text containing a secret can still be sent to the LLM (password fields are masked).
 This option takes an already-resolved string, however you got it, so it works directly with
 [`k6/secrets`](https://grafana.com/docs/k6/latest/javascript-api/k6-secrets/)
-(or `__ENV`, a `.env` file, anything else):
+(or `__ENV`, anything else):
 
 ```js
 import secrets from 'k6/secrets';
@@ -206,11 +217,13 @@ await page.ai.act('type {{password}} into the password field', { secrets: { pass
 
 Passed to `browserAI(page, options)` or `browser.newPage(options)`:
 
-- `llm` (object, optional) - your own client instead of the default Anthropic one. Must implement `.complete(systemPrompt: string, userPrompt: string): string`, called synchronously (not awaited).
+- `llm` (object, optional) - your own client instead of the default Anthropic/OpenAI one. Must implement `.complete(systemPrompt: string, userPrompt: string): string`, called synchronously (not awaited).
 - `llmOptions` (object, optional) - options for the *default* client, ignored if you pass your own `llm`:
-  - `apiKey` (string) - defaults to the `ANTHROPIC_API_KEY`/`ANTHROPIC_TOKEN` env var or a `.env` file.
-  - `model` (string) - defaults to the `BROWSER_AI_MODEL` env var or the library's own default model.
-  - `fallbackModel` (string) - Anthropic's safety classifier occasionally refuses a request that has nothing objectionable in it. On a refusal, the library retries once with this model.
+  - `provider` (`'anthropic'` | `'openai'`) - defaults to the `BROWSER_AI_PROVIDER` env var, otherwise inferred from the model name (`gpt-*`/`o1`/`o3`… → OpenAI, `claude-*` → Anthropic), otherwise whichever provider has an API key set (Anthropic first). To force OpenAI when both keys are set: `-e BROWSER_AI_PROVIDER=openai`.
+  - `apiKey` (string) - defaults to the provider's env var (`ANTHROPIC_API_KEY`/`ANTHROPIC_TOKEN`, or `OPENAI_API_KEY`; `-e` or exported). Passing `apiKey` without a `provider` uses the provider implied by the model name (e.g. `gpt-4.1` → OpenAI), otherwise Anthropic, so check where your key is sent.
+  - `model` (string) - defaults to the `BROWSER_AI_MODEL` env var or the provider's own default model (`claude-sonnet-5` for Anthropic, `gpt-4.1` for OpenAI). `BROWSER_AI_MODEL` is not per-provider, so only set it to a model that matches the provider in use.
+  - `maxTokens` (number) - max tokens the model may generate per call, including hidden reasoning on OpenAI reasoning models. Defaults to 1024 for Anthropic and 4096 for OpenAI; raise it if you get an empty-response error.
+  - `fallbackModel` (string) - Anthropic's safety classifier occasionally refuses a request that has nothing objectionable in it. On a refusal, the library retries once with this model. Defaults to the library's baseline Anthropic model; with OpenAI it is only used if you set it.
 - `maxElements` (number, default 150) - cap on interactive elements collected per snapshot; can truncate link-dense pages.
 - `actionTimeout` (ms, default 8000) - per-action timeout, passed to k6/browser's own Locator actions (click/fill/check/...).
 - `context` (boolean, default false) - feeds a rolling log of past `act()`/`agent()` decisions into every future decision, to help it reason (e.g. "the other checkbox") - never to skip a call.
