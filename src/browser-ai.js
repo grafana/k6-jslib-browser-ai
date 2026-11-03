@@ -649,10 +649,15 @@ export function browserAI(page, options = {}) {
       JUDGE_SYSTEM_PROMPT,
       `Question: ${resolvedQuestion}\n\nCurrent URL: ${page.url()}\n\nPage text:\n${text}`
     );
-    const met = !!(decision && decision.met);
-    const raw = decision && decision.confidence;
+    // A missing or non-boolean "met" is a malformed response, not a verdict:
+    // coercing it would let garbage read as a (high-confidence) answer.
+    if (!decision || typeof decision.met !== 'boolean') {
+      throw new Error(`browser-ai: judge could not evaluate "${resolvedQuestion}": the model returned no boolean "met"`);
+    }
+    const met = decision.met;
+    const raw = decision.confidence;
     const confidence = typeof raw === 'number' && Number.isFinite(raw) ? Math.min(1, Math.max(0, raw)) : met ? 1 : 0;
-    return { met, confidence, reason: (decision && decision.reason) || '' };
+    return { met, confidence, reason: decision.reason || '' };
   }
 
   // The inverse of assert(): passes when the condition is *not* met, so a
