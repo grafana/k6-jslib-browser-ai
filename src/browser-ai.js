@@ -661,7 +661,12 @@ export function browserAI(page, options = {}) {
     if (typeof raw !== 'number' || !Number.isFinite(raw)) {
       throw new Error(`browser-ai: judge could not evaluate "${resolvedQuestion}": the model returned no numeric "confidence"`);
     }
-    const confidence = Math.min(1, Math.max(0, raw));
+    // Out of range usually means the model used another scale (e.g. 85 for
+    // 85%); clamping that would silently turn it into 1, so reject it.
+    if (raw < 0 || raw > 1) {
+      throw new Error(`browser-ai: judge could not evaluate "${resolvedQuestion}": the model returned a "confidence" outside 0-1 (${raw})`);
+    }
+    const confidence = raw;
     return { met, confidence, reason: typeof decision.reason === 'string' ? decision.reason : '' };
   }
 

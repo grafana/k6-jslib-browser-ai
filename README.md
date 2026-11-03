@@ -177,7 +177,7 @@ OPENAI_API_KEY=your_key k6 run examples/basic.test.js
 - `page.ai.assert(assertion, { variables? })` - check a condition once; throws if it isn't currently met
 - `page.ai.assert.not(assertion, { variables? })` - the inverse of `assert`; throws if the condition is currently met
 - `page.ai.judge(question, { variables? })` - check a condition once and return `{ met, confidence, reason }`; doesn't throw when the condition is unmet (browser or model errors still throw)
-  - `confidence` is 0-1 and is the model's own estimate, not a calibrated probability. It measures how sure the model is of the `met` it returned, not how likely the condition is to be true: `met: false, confidence: 0.9` means it's confident the condition is *not* met. Values outside 0-1 are clamped. A response with no boolean `met` or no numeric `confidence` throws.
+  - `confidence` is 0-1 and is the model's own estimate, not a calibrated probability. It measures how sure the model is of the `met` it returned, not how likely the condition is to be true: `met: false, confidence: 0.9` means it's confident the condition is *not* met. A response with no boolean `met`, or with a `confidence` that isn't a number between 0 and 1, throws.
   - It only sees the page's URL and its visible text (truncated to the first 4,000 characters), not a screenshot, so judge things that show up as text. The snapshot doesn't include current form-control state (a filled input's value, a checkbox's checked state, or which `<select>` option is chosen), so questions about those can get a confident but wrong verdict.
 
 ### Types
