@@ -1,13 +1,12 @@
 import http from 'k6/http';
-import { readEnv } from './env.js';
 
 const PROVIDERS = {
   anthropic: {
     label: 'Anthropic',
     defaultModel: 'claude-sonnet-5',
     defaultMaxTokens: 1024,
-    // Accepted names, checked in order, across both -e/--env flags and a
-    // project-root .env file (see env.js).
+    // Accepted names, checked in order, in k6's environment (-e/--env flags
+    // or real environment variables).
     apiKeyNames: ['ANTHROPIC_API_KEY', 'ANTHROPIC_TOKEN'],
   },
   openai: {
@@ -46,6 +45,16 @@ function resolveProvider(options) {
   return 'anthropic';
 }
 
+// First non-empty value among the candidate names, in order, in k6's
+// environment (-e/--env flags or real environment variables, both exposed
+// as __ENV).
+function readEnv(...names) {
+  for (const name of names) {
+    if (__ENV[name]) return __ENV[name];
+  }
+  return undefined;
+}
+
 // Minimal Anthropic/OpenAI client: sends a system+user prompt, returns the
 // raw text response. No npm dependency - everything goes over k6/http, which
 // works fine inside async functions.
@@ -77,7 +86,7 @@ export function createLLMClient(options = {}) {
   if (!apiKey) {
     throw new Error(
       `browser-ai: missing API key. Set one of ${apiKeyNames.join(', ')} ` +
-        '(via -e, or a .env file at the project root) or pass { llmOptions: { apiKey } }.'
+        '(via -e or an environment variable) or pass { llmOptions: { apiKey } }.'
     );
   }
 

@@ -186,7 +186,7 @@ await page.ai.act('search for {{query}}', { variables: { query: 'load testing to
 non-password field values or visible text containing a secret can still be sent to the LLM (password fields are masked).
 This option takes an already-resolved string, however you got it, so it works directly with
 [`k6/secrets`](https://grafana.com/docs/k6/latest/javascript-api/k6-secrets/)
-(or `__ENV`, a `.env` file, anything else):
+(or `__ENV`, anything else):
 
 ```js
 import secrets from 'k6/secrets';
@@ -202,7 +202,7 @@ Passed to `browserAI(page, options)` or `browser.newPage(options)`:
 - `llm` (object, optional) - your own client instead of the default Anthropic/OpenAI one. Must implement `.complete(systemPrompt: string, userPrompt: string): string`, called synchronously (not awaited).
 - `llmOptions` (object, optional) - options for the *default* client, ignored if you pass your own `llm`:
   - `provider` (`'anthropic'` | `'openai'`) - defaults to the `BROWSER_AI_PROVIDER` env var, otherwise inferred from the model name (`gpt-*`/`o1`/`o3`… → OpenAI, `claude-*` → Anthropic), otherwise whichever provider has an API key set (Anthropic first). To force OpenAI when both keys are set: `-e BROWSER_AI_PROVIDER=openai`.
-  - `apiKey` (string) - defaults to the provider's env var (`ANTHROPIC_API_KEY`/`ANTHROPIC_TOKEN`, or `OPENAI_API_KEY`) or a `.env` file. Passing `apiKey` without a `provider` uses the provider implied by the model name (e.g. `gpt-4.1` → OpenAI), otherwise Anthropic, so check where your key is sent.
+  - `apiKey` (string) - defaults to the provider's env var (`ANTHROPIC_API_KEY`/`ANTHROPIC_TOKEN`, or `OPENAI_API_KEY`; `-e` or exported). Passing `apiKey` without a `provider` uses the provider implied by the model name (e.g. `gpt-4.1` → OpenAI), otherwise Anthropic, so check where your key is sent.
   - `model` (string) - defaults to the `BROWSER_AI_MODEL` env var or the provider's own default model (`claude-sonnet-5` for Anthropic, `gpt-4.1` for OpenAI). `BROWSER_AI_MODEL` is not per-provider, so only set it to a model that matches the provider in use.
   - `maxTokens` (number) - max tokens the model may generate per call, including hidden reasoning on OpenAI reasoning models. Defaults to 1024 for Anthropic and 4096 for OpenAI; raise it if you get an empty-response error.
   - `fallbackModel` (string) - Anthropic's safety classifier occasionally refuses a request that has nothing objectionable in it. On a refusal, the library retries once with this model. Defaults to the library's baseline Anthropic model; with OpenAI it is only used if you set it.
