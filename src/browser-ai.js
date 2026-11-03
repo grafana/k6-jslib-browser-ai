@@ -625,13 +625,34 @@ export function browserAI(page, options = {}) {
     );
   }
 
+  // The inverse of assert(): passes when the condition is *not* met, so a
+  // negative check ("no error banner is showing") doesn't have to be
+  // phrased as a double negative for the model to judge.
+  assert.not = async function assertNot(assertion, assertOpts = {}) {
+    const resolvedAssertion = substitutePlaceholders(assertion, assertOpts.variables);
+    const { met, reason, valid } = await checkCondition(resolvedAssertion);
+    // A malformed verdict reads as "not met" to assert()/wait(), which fails
+    // closed there; here it would pass, so reject it instead.
+    if (!valid) {
+      throw new Error(`browser-ai: assert.not could not evaluate "${resolvedAssertion}": the model returned no boolean "met"`);
+    }
+    if (!met) return;
+    throw new Error(
+      `browser-ai: assertion failed: expected NOT "${resolvedAssertion}" - ${reason || 'condition was met'}`
+    );
+  };
+
   async function checkCondition(condition) {
     const text = await evaluateStable(collectVisibleText, 4000);
     const decision = askLlm(
       CONDITION_SYSTEM_PROMPT,
       `Condition: ${condition}\n\nCurrent URL: ${page.url()}\n\nPage text:\n${text}`
     );
-    return { met: !!(decision && decision.met), reason: decision && decision.reason };
+    return {
+      met: !!(decision && decision.met),
+      reason: decision && decision.reason,
+      valid: !!decision && typeof decision.met === 'boolean',
+    };
   }
 
   // Independently audits a self-reported agent() "done" against the
