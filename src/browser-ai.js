@@ -149,7 +149,14 @@ function firstLine(err, secrets) {
   } catch {
     text = '[unprintable error]';
   }
-  return redactSecrets(text, secrets).split('\n')[0].slice(0, REPORT_ERROR_MAX_LENGTH);
+  try {
+    text = redactSecrets(text, secrets);
+  } catch {
+    // If redaction itself fails (e.g. a throwing getter on secrets), don't
+    // fall back to the unredacted text, and don't let it mask the call's outcome.
+    return '[error text withheld: could not redact secrets]';
+  }
+  return text.split('\n')[0].slice(0, REPORT_ERROR_MAX_LENGTH);
 }
 
 // A failed action's error text can echo the value it was acting on (a fill
@@ -158,7 +165,9 @@ function firstLine(err, secrets) {
 // is replaced whole. The thrown error itself is never touched.
 function redactSecrets(text, secrets) {
   if (!secrets || typeof secrets !== 'object') return text;
-  const entries = Object.entries(secrets)
+  // Same own properties substitutePlaceholders() accepts, enumerable or not.
+  const entries = Object.getOwnPropertyNames(secrets)
+    .map((name) => [name, secrets[name]])
     .filter(([, value]) => typeof value === 'string' && value)
     .sort((x, y) => y[1].length - x[1].length);
   for (const [name, value] of entries) text = text.split(value).join(`{{${name}}}`);
