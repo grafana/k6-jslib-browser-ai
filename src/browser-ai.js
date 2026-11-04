@@ -139,7 +139,7 @@ function reportInstruction(arg) {
 // Object.create(null)), and reporting must never change a call's outcome,
 // so every access is guarded. An error may carry a `reportMessage` that is
 // safe to log (e.g. one without page-derived data) which wins over .message.
-function firstLine(err) {
+function firstLine(err, secrets) {
   let text;
   try {
     const safe = err && err.reportMessage;
@@ -147,7 +147,20 @@ function firstLine(err) {
   } catch {
     text = '[unprintable error]';
   }
-  return text.split('\n')[0].slice(0, REPORT_ERROR_MAX_LENGTH);
+  return redactSecrets(text, secrets).split('\n')[0].slice(0, REPORT_ERROR_MAX_LENGTH);
+}
+
+// A failed action's error text can echo the value it was acting on (a fill
+// with a secret), so put the {{name}} placeholders back before anything is
+// truncated or reported. Longest values first so one that contains another
+// is replaced whole. The thrown error itself is never touched.
+function redactSecrets(text, secrets) {
+  if (!secrets || typeof secrets !== 'object') return text;
+  const entries = Object.entries(secrets)
+    .filter(([, value]) => typeof value === 'string' && value)
+    .sort((x, y) => y[1].length - x[1].length);
+  for (const [name, value] of entries) text = text.split(value).join(`{{${name}}}`);
+  return text;
 }
 
 // `report` is 'off' (default), 'json' (one `browser-ai:step {json}` console
@@ -968,6 +981,8 @@ export function browserAI(page, options = {}) {
   function reported(type, fn) {
     return async (instruction, ...rest) => {
       if (!report) return fn(instruction, ...rest);
+      // act() and agent() take { secrets } in their options object.
+      const secrets = rest[0] && typeof rest[0] === 'object' ? rest[0].secrets : undefined;
       const index = stepIndex++;
       const startedAt = Date.now();
       // A broken reporter must never change the outcome of the call it
@@ -992,12 +1007,12 @@ export function browserAI(page, options = {}) {
       try {
         result = await fn(instruction, ...rest);
       } catch (e) {
-        await emit('failed', firstLine(e));
+        await emit('failed', firstLine(e, secrets));
         throw e;
       }
       // agent() doesn't throw when it gives up, it returns done: false.
       if (type === 'agent' && result && result.done === false) {
-        await emit('failed', firstLine(`agent() didn't finish after ${result.steps.length} steps: ${result.reason}`));
+        await emit('failed', firstLine(`agent() didn't finish after ${result.steps.length} steps: ${result.reason}`, secrets));
       } else if (type === 'judge' && result) {
         // An unmet judge() isn't a failure (it returns a verdict), so the
         // verdict goes on the event for run summaries. The reason is left
