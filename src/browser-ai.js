@@ -130,7 +130,7 @@ function reportInstruction(arg) {
   if (typeof arg === 'string') return arg;
   if (!arg || typeof arg !== 'object') return undefined;
   if (typeof arg.description === 'string' && arg.description) return arg.description;
-  if (arg.action === 'scroll' && typeof arg.value === 'string') return `scroll ${arg.value}`;
+  if (arg.action === 'scroll' && (arg.value === 'up' || arg.value === 'down')) return `scroll ${arg.value}`;
   return undefined;
 }
 
