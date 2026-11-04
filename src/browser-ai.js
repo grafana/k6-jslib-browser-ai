@@ -121,6 +121,68 @@ function recordContext(entry) {
   if (sharedContext.length > CONTEXT_LIMIT) sharedContext.shift();
 }
 
+const REPORT_ERROR_MAX_LENGTH = 300;
+
+// What to show as a report's `instruction`: the string the caller passed or,
+// for act(step) replays, the step's description, else "scroll up/down", else
+// just the action name ("click", "fill", ...). Never the step's value, which
+// can be a secret.
+const REPORT_STEP_ACTIONS = ['click', 'fill', 'check', 'uncheck', 'select', 'press', 'scroll'];
+function reportInstruction(arg) {
+  if (typeof arg === 'string') return arg;
+  if (!arg || typeof arg !== 'object') return undefined;
+  if (typeof arg.description === 'string' && arg.description) return arg.description;
+  if (arg.action === 'scroll' && (arg.value === 'up' || arg.value === 'down')) return `scroll ${arg.value}`;
+  return REPORT_STEP_ACTIONS.includes(arg.action) ? arg.action : undefined;
+}
+
+// Turns whatever was thrown into a short single-line string for reports.
+// Reading .message or converting to a string can itself throw (getters,
+// Object.create(null)), and reporting must never change a call's outcome,
+// so every access is guarded. An error may carry a `reportMessage` that is
+// safe to log (e.g. one without page-derived data) which wins over .message.
+function firstLine(err, secrets) {
+  let text;
+  try {
+    const safe = err && err.reportMessage;
+    text = String(typeof safe === 'string' ? safe : (err && err.message) || err);
+  } catch {
+    text = '[unprintable error]';
+  }
+  try {
+    text = redactSecrets(text, secrets);
+  } catch {
+    // If redaction itself fails (e.g. a throwing getter on secrets), don't
+    // fall back to the unredacted text, and don't let it mask the call's outcome.
+    return '[error text withheld: could not redact secrets]';
+  }
+  return text.split('\n')[0].slice(0, REPORT_ERROR_MAX_LENGTH);
+}
+
+// A failed action's error text can echo the value it was acting on (a fill
+// with a secret), so put the {{name}} placeholders back before anything is
+// truncated or reported. Longest values first so one that contains another
+// is replaced whole. The thrown error itself is never touched.
+function redactSecrets(text, secrets) {
+  if (!secrets || typeof secrets !== 'object') return text;
+  // Same own properties substitutePlaceholders() accepts, enumerable or not.
+  const entries = Object.getOwnPropertyNames(secrets)
+    .map((name) => [name, secrets[name]])
+    .filter(([, value]) => typeof value === 'string' && value)
+    .sort((x, y) => y[1].length - x[1].length);
+  for (const [name, value] of entries) text = text.split(value).join(`{{${name}}}`);
+  return text;
+}
+
+// `report` is 'off' (default), 'json' (one `browser-ai:step {json}` console
+// line per page.ai call), or a function that receives the event instead.
+function resolveReporter(report = 'off') {
+  if (report === 'off' || report === false) return null;
+  if (typeof report === 'function') return report;
+  if (report === 'json') return (event) => console.log('browser-ai:step ' + JSON.stringify(event));
+  throw new Error(`browser-ai: options.report must be 'json', 'off' or a function, got ${JSON.stringify(report)}`);
+}
+
 /**
  * Wraps a k6 browser `page` with a small `.ai` namespace (act / observe /
  * extract / agent / wait / assert / judge) backed by an LLM, while every native
@@ -140,6 +202,7 @@ export function browserAI(page, options = {}) {
   const maxElements = options.maxElements || DEFAULT_MAX_ELEMENTS;
   const actionTimeout = options.actionTimeout || DEFAULT_ACTION_TIMEOUT_MS;
   const contextEnabled = !!options.context;
+  const report = resolveReporter(options.report);
 
   function getLlm() {
     if (!llm) llm = createLLMClient(options.llmOptions || {});
@@ -921,7 +984,70 @@ export function browserAI(page, options = {}) {
     return { done: false, reason: 'max steps reached', steps: history };
   }
 
-  const ai = { act, observe, extract, agent, wait, assert, judge };
+  let stepIndex = 0;
+
+  // Reports one entry per page.ai call (agent() included, as a single entry).
+  // Only the public `ai` surface is wrapped, so the library's own internal
+  // calls between these functions never report twice.
+  function reported(type, fn) {
+    return async (instruction, ...rest) => {
+      if (!report) return fn(instruction, ...rest);
+      // act() and agent() take { secrets } in their options object.
+      const secrets = rest[0] && typeof rest[0] === 'object' ? rest[0].secrets : undefined;
+      const index = stepIndex++;
+      const startedAt = Date.now();
+      // A broken reporter must never change the outcome of the call it
+      // reports on: swallow its errors (sync or async) and wait for it so
+      // reporting is done before the call settles.
+      const emit = async (status, error, extra) => {
+        try {
+          await report({
+            index,
+            type,
+            instruction: reportInstruction(instruction),
+            status,
+            durationMs: Date.now() - startedAt,
+            error,
+            ...extra,
+          });
+        } catch (reportError) {
+          console.warn(`browser-ai: report callback threw: ${firstLine(reportError)}`);
+        }
+      };
+      let result;
+      try {
+        result = await fn(instruction, ...rest);
+      } catch (e) {
+        await emit('failed', firstLine(e, secrets));
+        throw e;
+      }
+      // agent() doesn't throw when it gives up, it returns done: false.
+      if (type === 'agent' && result && result.done === false) {
+        await emit('failed', firstLine(`agent() didn't finish after ${result.steps.length} steps: ${result.reason}`, secrets));
+      } else if (type === 'judge' && result) {
+        // An unmet judge() isn't a failure (it returns a verdict), so the
+        // verdict goes on the event for run summaries. The reason is left
+        // out: it can quote page content.
+        await emit('passed', undefined, { met: result.met, confidence: result.confidence });
+      } else {
+        await emit('passed');
+      }
+      return result;
+    };
+  }
+
+  const ai = {
+    act: reported('act', act),
+    observe: reported('observe', observe),
+    extract: reported('extract', extract),
+    agent: reported('agent', agent),
+    wait: reported('wait', wait),
+    assert: reported('assert', assert),
+    judge: reported('judge', judge),
+  };
+  // assert.not lives on the assert function, which reported() replaces with a
+  // wrapper, so wrap and re-attach it or page.ai.assert.not would disappear.
+  ai.assert.not = reported('assert.not', assert.not);
 
   return new Proxy(page, {
     get(target, prop, receiver) {
@@ -936,7 +1062,7 @@ export function browserAI(page, options = {}) {
 // browser.newPage() accepts k6's own page options (viewport, ...) and
 // this library's (llm, maxElements, ...) in the same object - split them
 // apart here rather than asking for two separate arguments.
-const AI_OPTION_KEYS = ['llm', 'llmOptions', 'maxElements', 'actionTimeout', 'context'];
+const AI_OPTION_KEYS = ['llm', 'llmOptions', 'maxElements', 'actionTimeout', 'context', 'report'];
 
 function splitAIOptions(options = {}) {
   const aiOptions = {};
@@ -962,6 +1088,8 @@ function wrapBrowserLike(target, contextAIOptions = {}) {
         return async (options) => {
           const { aiOptions, nativeOptions } = splitAIOptions(options);
           const hasNative = Object.keys(nativeOptions).length > 0;
+          // Validate before allocating the native page so a bad option can't leak it.
+          resolveReporter({ ...contextAIOptions, ...aiOptions }.report);
           const page = await (hasNative ? obj.newPage(nativeOptions) : obj.newPage());
           return browserAI(page, { ...contextAIOptions, ...aiOptions });
         };
@@ -970,6 +1098,7 @@ function wrapBrowserLike(target, contextAIOptions = {}) {
         return async (options) => {
           const { aiOptions, nativeOptions } = splitAIOptions(options);
           const hasNative = Object.keys(nativeOptions).length > 0;
+          resolveReporter({ ...contextAIOptions, ...aiOptions }.report);
           const context = await (hasNative ? obj.newContext(nativeOptions) : obj.newContext());
           return wrapBrowserLike(context, { ...contextAIOptions, ...aiOptions });
         };
@@ -1010,7 +1139,11 @@ function parseJSON(raw) {
   try {
     return JSON.parse(cleaned);
   } catch (err) {
-    throw new Error(`browser-ai: failed to parse LLM response as JSON: ${cleaned}`);
+    const error = new Error(`browser-ai: failed to parse LLM response as JSON: ${cleaned}`);
+    // The response can hold page-derived data (extract()), so reports get
+    // a message without it; the thrown error itself is unchanged.
+    error.reportMessage = 'browser-ai: failed to parse LLM response as JSON';
+    throw error;
   }
 }
 

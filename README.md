@@ -228,11 +228,42 @@ Passed to `browserAI(page, options)` or `browser.newPage(options)`:
 - `maxElements` (number, default 150) - cap on interactive elements collected per snapshot; can truncate link-dense pages.
 - `actionTimeout` (ms, default 8000) - per-action timeout, passed to k6/browser's own Locator actions (click/fill/check/...).
 - `context` (boolean, default false) - feeds a rolling log of past `act()`/`agent()` decisions into every future decision, to help it reason (e.g. "the other checkbox") - never to skip a call.
+- `report` (`'off'` | `'json'` | function, default `'off'`) - reports how each `page.ai` call went (`agent()` counts as one), so you can build a run summary. `'json'` logs one `browser-ai:step {json}` line per call; pass a function to receive each event yourself. See [Step reports](#step-reports).
 
 ### Diagnostic logging
 
 Diagnostic logging (the LLM prompt/raw response) goes through `console.debug()`, so it's silent by default - run
 `k6 run --verbose your_script.js` (or `--log-level debug`) to see it, same as any other k6 module.
+
+### Step reports
+
+Set `report: 'json'` and each `page.ai` call logs a line like this when it finishes:
+
+```
+browser-ai:step {"index":0,"type":"act","instruction":"click the login button","status":"passed","durationMs":1840}
+```
+
+`instruction` is the string you passed or, for an `act(step)` replay, the step's `description`, else `scroll up`/`scroll down`, else just the action name (`click`, `fill`, ...). `status` is `'passed'` or `'failed'` (with the first line of the error in `error`). 
+`type` is the method that was called: `act`, `observe`, `extract`, `agent`, `wait`, `assert`, `assert.not` or `judge`. An `agent()` that returns `done: false` is reported as failed.
+
+`judge()` returns a verdict instead of throwing when a condition isn't met, so an unmet one is reported as `passed`, with the verdict in `met` and `confidence` (not the `reason`, which can quote page content):
+
+```
+browser-ai:step {"index":3,"type":"judge","instruction":"the checkout page shows an error message","status":"passed","durationMs":2210,"met":false,"confidence":0.9}
+```
+
+> [!WARNING]
+> `error` can include text taken from the page, such as the model's reason for a failed `assert()` or the text of an element covering the target of an `act()`. `instruction` can too: for an `act(step)` replay it is the step's `description`, which `observe()` builds from page text or an input's current value, and a string you pass is reported exactly as written (so put sensitive values in `secrets`, not in the instruction text; its `{{name}}` placeholders are reported unsubstituted). `report: 'json'` writes all of this to your k6 logs as is, so on pages that show sensitive data, pass a function and filter or drop `error` and `instruction` yourself.
+>
+> Secret values passed in `secrets` are replaced with their `{{name}}` placeholder in `error`, but that only covers values you pass in, not other sensitive text on the page. Values passed in `variables` are not redacted: they are shown to the model and can appear in `error` (for example in a failed `assert()`), so never put anything sensitive in `variables`.
+
+Or pass a function to handle the events yourself:
+
+```javascript
+const page = await browser.newPage({
+  report: (event) => console.log(`${event.status === 'passed' ? '✓' : '✗'} ${event.type}: ${event.instruction}`),
+});
+```
 
 ### When `act()` can't find a match
 
