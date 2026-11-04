@@ -253,7 +253,9 @@ browser-ai:step {"index":3,"type":"judge","instruction":"the checkout page shows
 ```
 
 > [!WARNING]
-> `error` can include text taken from the page, such as the model's reason for a failed `assert()` or the text of an element covering the target of an `act()`. `report: 'json'` writes it to your k6 logs as is, so on pages that show sensitive data, pass a function and filter or drop `error` yourself.
+> `error` can include text taken from the page, such as the model's reason for a failed `assert()` or the text of an element covering the target of an `act()`. `instruction` can too: for an `act(step)` replay it is the step's `description`, which `observe()` builds from page text or an input's current value, and a string you pass is reported exactly as written (so use `{{variables}}` and `{{secrets}}` placeholders, which are reported unsubstituted, rather than literal sensitive values). `report: 'json'` writes all of this to your k6 logs as is, so on pages that show sensitive data, pass a function and filter or drop `error` and `instruction` yourself.
+>
+> Secret values passed in `secrets` are replaced with their `{{name}}` placeholder in `error`, but that only covers values you pass in, not other sensitive text on the page.
 
 Or pass a function to handle the events yourself:
 
