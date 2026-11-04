@@ -123,6 +123,17 @@ function recordContext(entry) {
 
 const REPORT_ERROR_MAX_LENGTH = 300;
 
+// What to show as a report's `instruction`: the string the caller passed or,
+// for act(step) replays, the step's description (or "scroll up/down"). Never
+// the step's value, which can be a secret.
+function reportInstruction(arg) {
+  if (typeof arg === 'string') return arg;
+  if (!arg || typeof arg !== 'object') return undefined;
+  if (typeof arg.description === 'string' && arg.description) return arg.description;
+  if (arg.action === 'scroll' && typeof arg.value === 'string') return `scroll ${arg.value}`;
+  return undefined;
+}
+
 // Turns whatever was thrown into a short single-line string for reports.
 // Reading .message or converting to a string can itself throw (getters,
 // Object.create(null)), and reporting must never change a call's outcome,
@@ -967,7 +978,7 @@ export function browserAI(page, options = {}) {
           await report({
             index,
             type,
-            instruction: typeof instruction === 'string' ? instruction : undefined,
+            instruction: reportInstruction(instruction),
             status,
             durationMs: Date.now() - startedAt,
             error,
