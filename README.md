@@ -243,7 +243,7 @@ Set `report: 'json'` and each `page.ai` call logs a line like this when it finis
 browser-ai:step {"index":0,"type":"act","instruction":"click the login button","status":"passed","durationMs":1840}
 ```
 
-`instruction` is the string you passed or, for an `act(step)` replay, the step's `description` (or `scroll up`/`scroll down`). `status` is `'passed'` or `'failed'` (with the first line of the error in `error`). 
+`instruction` is the string you passed or, for an `act(step)` replay, the step's `description`, else `scroll up`/`scroll down`, else just the action name (`click`, `fill`, ...). `status` is `'passed'` or `'failed'` (with the first line of the error in `error`). 
 `type` is the method that was called: `act`, `observe`, `extract`, `agent`, `wait`, `assert`, `assert.not` or `judge`. An `agent()` that returns `done: false` is reported as failed.
 
 `judge()` returns a verdict instead of throwing when a condition isn't met, so an unmet one is reported as `passed`, with the verdict in `met` and `confidence` (not the `reason`, which can quote page content):

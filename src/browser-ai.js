@@ -124,14 +124,16 @@ function recordContext(entry) {
 const REPORT_ERROR_MAX_LENGTH = 300;
 
 // What to show as a report's `instruction`: the string the caller passed or,
-// for act(step) replays, the step's description (or "scroll up/down"). Never
-// the step's value, which can be a secret.
+// for act(step) replays, the step's description, else "scroll up/down", else
+// just the action name ("click", "fill", ...). Never the step's value, which
+// can be a secret.
+const REPORT_STEP_ACTIONS = ['click', 'fill', 'check', 'uncheck', 'select', 'press', 'scroll'];
 function reportInstruction(arg) {
   if (typeof arg === 'string') return arg;
   if (!arg || typeof arg !== 'object') return undefined;
   if (typeof arg.description === 'string' && arg.description) return arg.description;
   if (arg.action === 'scroll' && (arg.value === 'up' || arg.value === 'down')) return `scroll ${arg.value}`;
-  return undefined;
+  return REPORT_STEP_ACTIONS.includes(arg.action) ? arg.action : undefined;
 }
 
 // Turns whatever was thrown into a short single-line string for reports.
