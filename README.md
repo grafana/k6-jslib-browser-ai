@@ -252,6 +252,9 @@ browser-ai:step {"index":0,"type":"act","instruction":"click the login button","
 browser-ai:step {"index":3,"type":"judge","instruction":"the checkout page shows an error message","status":"passed","durationMs":2210,"met":false,"confidence":0.9}
 ```
 
+> [!WARNING]
+> `error` can include text taken from the page, such as the model's reason for a failed `assert()` or the text of an element covering the target of an `act()`. `report: 'json'` writes it to your k6 logs as is, so on pages that show sensitive data, pass a function and filter or drop `error` yourself.
+
 Or pass a function to handle the events yourself:
 
 ```javascript
