@@ -142,6 +142,15 @@ await page.ai.assert('the order confirmation is showing');
 await page.ai.assert.not('an error banner is showing');
 ```
 
+### 7. Judge conditions
+
+Like `assert`, but an unmet condition doesn't throw and it returns a confidence, for answers that aren't clear-cut.
+
+```javascript
+const { met, confidence, reason } = await page.ai.judge('the checkout page shows an error message');
+// e.g. { met: true, confidence: 0.7, reason: 'the page says "Something went wrong"' }
+```
+
 ## Examples
 
 Runnable examples live in `examples/`:
@@ -167,12 +176,15 @@ OPENAI_API_KEY=your_key k6 run examples/basic.test.js
   - `timeout` (ms, default 10000); `interval` (ms, default 500).
 - `page.ai.assert(assertion, { variables? })` - check a condition once; throws if it isn't currently met
 - `page.ai.assert.not(assertion, { variables? })` - the inverse of `assert`; throws if the condition is currently met
+- `page.ai.judge(question, { variables? })` - check a condition once and return `{ met, confidence, reason }`; doesn't throw when the condition is unmet (browser or model errors still throw)
+  - `confidence` is 0-1 and is the model's own estimate, not a calibrated probability. It measures how sure the model is of the `met` it returned, not how likely the condition is to be true: `met: false, confidence: 0.9` means it's confident the condition is *not* met. A response with no boolean `met`, or with a `confidence` that isn't a number between 0 and 1, throws.
+  - It only sees the page's URL and its visible text (truncated to the first 4,000 characters), not a screenshot, so judge things that show up as text. The snapshot doesn't include current form-control state (a filled input's value, a checkbox's checked state, or which `<select>` option is chosen), so questions about those can get a confident but wrong verdict.
 
 ### Types
 
 These are referenced above and in the examples below, rather than spelled out on every line:
 
-- **`instruction` / `goal` / `condition` / `assertion`** - a plain natural-language string, e.g. `'click the sign in button'`.
+- **`instruction` / `goal` / `condition` / `assertion` / `question`** - a plain natural-language string, e.g. `'click the sign in button'`.
 - **`Step`** - an element step `{ selector: string, action: 'click'|'fill'|'check'|'uncheck'|'select'|'press', value?: string, frameSelector?: string, description?: string }`, or a scroll step `{ action: 'scroll', value: 'up'|'down' }`. `observe()` returns element steps; `act()` can return either kind. Passing a step into `act()` skips the LLM decision - you're not expected to build one by hand, just pass one straight through.
 - **`secrets` / `variables`** - a plain object mapping a `{{name}}` placeholder to its string value, e.g. `{ password: 'actual value' }`. See [Secrets and variables](#secrets-and-variables) below.
 - **`schema`** (`extract()` only) - any object shape you want the result to match, e.g. `{ name: 'string' }`. Not real JSON Schema - it's serialized into the prompt as a hint for the model, with no local validation.
@@ -181,7 +193,7 @@ These are referenced above and in the examples below, rather than spelled out on
 
 `{{name}}` placeholders are resolved as follows:
 - `secrets` (`act()` with a string instruction, and `agent()`) - kept as placeholders in the instruction/goal; substituted only into the chosen action's `value` immediately before execution.
-- `variables` (all six AI methods) - visible to the LLM; substituted into the instruction/goal/condition/assertion before the LLM call.
+- `variables` (all seven AI methods) - visible to the LLM; substituted into the instruction/goal/condition/assertion before the LLM call.
 
 Variables, for anything safe to show the model:
 
