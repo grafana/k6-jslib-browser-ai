@@ -1,6 +1,5 @@
 import { check } from 'k6';
 import { browser } from '../../src/browser-ai.js';
-import { readEnv } from '../../src/env.js';
 
 export const options = {
   scenarios: { ui: { executor: 'shared-iterations', options: { browser: { type: 'chromium' } } } },
@@ -21,13 +20,13 @@ export default async function () {
   let ok = false;
 
   try {
-    await page.goto(`${readEnv('GRAFANA_URL')}/login`, { waitUntil: 'networkidle' });
-    await page.ai.act('type {{user}} into the username field', { secrets: { user: readEnv('ADMIN_USER') } });
-    await page.ai.act('type {{password}} into the password field', { secrets: { password: readEnv('ADMIN_PASSWORD') } });
+    await page.goto(`${__ENV.GRAFANA_URL}/login`, { waitUntil: 'networkidle' });
+    await page.ai.act('type {{user}} into the username field', { secrets: { user: __ENV.ADMIN_USER } });
+    await page.ai.act('type {{password}} into the password field', { secrets: { password: __ENV.ADMIN_PASSWORD } });
     await page.ai.act('click the log in button');
     await page.ai.wait('the current page URL does not contain "/login"', { timeout: 20000 });
 
-    await page.goto(`${readEnv('GRAFANA_URL')}/dashboard/new`, { waitUntil: 'networkidle' });
+    await page.goto(`${__ENV.GRAFANA_URL}/dashboard/new`, { waitUntil: 'networkidle' });
     await page.ai.wait('the page text contains the phrase "Drag or click to add a panel"', { timeout: 8000 });
 
     await page.ai.act('click the panel drag-or-click area to add a panel');
